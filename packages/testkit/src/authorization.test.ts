@@ -130,7 +130,8 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["computer/screenUrl", { botId: "missing-bot" }],
       ["computer/heartbeat", { botId: "missing-bot" }],
       ["memory/list", {}],
-      ["memory/update", { documentId: "missing-memory", content: "Nope" }],
+      ["memory/update", { documentId: "missing-memory", content: "Nope", expectedRevision: 1 }],
+      ["memory/remove", { documentId: "missing-memory", expectedRevision: 1 }],
       ["memory/exportMarkdown", {}],
       ["routines/list", { botId: "missing-bot" }],
       ["routines/create", routineInput("missing-bot")],
@@ -153,15 +154,21 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ],
       ["skills/snapshot", { skillId: "missing-skill" }],
       ["skills/stop", { skillId: "missing-skill" }],
-      ["skills/updateDraft", { skillId: "missing-skill", playbook: skillPlaybookInput() }],
-      ["skills/save", { skillId: "missing-skill" }],
+      [
+        "skills/updateDraft",
+        { skillId: "missing-skill", playbook: skillPlaybookInput(), expectedRevision: 1 },
+      ],
+      ["skills/save", { skillId: "missing-skill", expectedRevision: 1 }],
       ["skills/testRun", { skillId: "missing-skill" }],
       ["skills/remove", { skillId: "missing-skill" }],
       ["agentSkills/list"],
       ["agentSkills/get", { skillId: "missing-skill" }],
       ["agentSkills/create", { name: "Unauthenticated", description: "Nope", body: "Steps" }],
-      ["agentSkills/update", { skillId: "missing-skill", description: "Nope" }],
-      ["agentSkills/remove", { skillId: "missing-skill" }],
+      [
+        "agentSkills/update",
+        { skillId: "missing-skill", description: "Nope", expectedRevision: 1 },
+      ],
+      ["agentSkills/remove", { skillId: "missing-skill", expectedRevision: 1 }],
       ["capabilities/list"],
       ["capabilities/install", capabilityInput("Unauthenticated")],
       ["capabilities/remove", { id: "missing-capability" }],
@@ -240,11 +247,16 @@ describeWithDatabase("API authorization and resource isolation", () => {
         recording: { events: [], snapshots: [] },
       },
     });
-    const ownerAgentSkill = await rpc<{ id: string }>(app, owner, "agentSkills/create", {
-      name: "Owner Recipe",
-      description: "Owner-only shared skill",
-      body: "1. Do the private thing.",
-    });
+    const ownerAgentSkill = await rpc<{ id: string; revision: number }>(
+      app,
+      owner,
+      "agentSkills/create",
+      {
+        name: "Owner Recipe",
+        description: "Owner-only shared skill",
+        body: "1. Do the private thing.",
+      },
+    );
     const ownerCapability = await rpc<{ id: string }>(
       app,
       owner,
@@ -406,19 +418,56 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ],
       ["skills/snapshot", { skillId: ownerSkill.id }],
       ["skills/stop", { skillId: ownerSkill.id }],
-      ["skills/updateDraft", { skillId: ownerSkill.id, playbook: skillPlaybookInput() }],
-      ["skills/save", { skillId: ownerSkill.id }],
       ["skills/testRun", { skillId: ownerSkill.id }],
       ["skills/remove", { skillId: ownerSkill.id }],
       ["agentSkills/get", { skillId: ownerAgentSkill.id }],
-      ["agentSkills/update", { skillId: ownerAgentSkill.id, description: "Stolen" }],
-      ["agentSkills/remove", { skillId: ownerAgentSkill.id }],
-      ["memory/update", { documentId: ownerMemory.id, content: "stolen" }],
+      ["memory/update", { documentId: ownerMemory.id, content: "stolen", expectedRevision: 1 }],
+      ["memory/remove", { documentId: ownerMemory.id, expectedRevision: 1 }],
       ["connections/complete", { connectionId: ownerConnection.connectionId }],
     ] satisfies Array<[string, unknown]>;
     await Promise.all(
       resourceIdCalls.map(([procedure, input]) => expectDenied(app, intruder, procedure, input)),
     );
+    const skillWrites = [
+      [
+        "skills/updateDraft",
+        {
+          skillId: ownerSkill.id,
+          playbook: skillPlaybookInput(),
+          expectedRevision: ownerSkill.revision,
+        },
+      ],
+      ["skills/save", { skillId: ownerSkill.id, expectedRevision: ownerSkill.revision }],
+      [
+        "agentSkills/update",
+        {
+          skillId: ownerAgentSkill.id,
+          description: "Stolen",
+          expectedRevision: ownerAgentSkill.revision,
+        },
+      ],
+      [
+        "agentSkills/remove",
+        { skillId: ownerAgentSkill.id, expectedRevision: ownerAgentSkill.revision },
+      ],
+    ] as const;
+    const beforeTaught = await handles.prisma.taughtSkill.findUniqueOrThrow({
+      where: { id: ownerSkill.id },
+    });
+    const beforeAgent = await handles.prisma.agentSkill.findUniqueOrThrow({
+      where: { id: ownerAgentSkill.id },
+    });
+    for (const [procedure, body] of skillWrites) {
+      const response = await raw(app, intruder, procedure, body);
+      expect(response.status, procedure).toBeGreaterThan(400);
+      expect(await response.text(), procedure).not.toMatch(/BAD_REQUEST|validation/i);
+    }
+    expect(
+      await handles.prisma.taughtSkill.findUniqueOrThrow({ where: { id: ownerSkill.id } }),
+    ).toEqual(beforeTaught);
+    expect(
+      await handles.prisma.agentSkill.findUniqueOrThrow({ where: { id: ownerAgentSkill.id } }),
+    ).toEqual(beforeAgent);
 
     expect(await rpc<unknown[]>(app, intruder, "memory/list", { botId: ownerBot.id })).toEqual([]);
     expect(await rpc<string>(app, intruder, "memory/exportMarkdown", { botId: ownerBot.id })).toBe(

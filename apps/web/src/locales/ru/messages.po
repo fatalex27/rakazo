@@ -4850,3 +4850,11 @@ msgstr "Диктовка"
 
 msgid "Stop dictation"
 msgstr "Остановить диктовку"
+
+#: src/pages/KnowledgeSection.tsx
+msgid "Could not delete"
+msgstr "Не удалось удалить"
+
+#: src/components/teach/SkillDraftCard.tsx
+msgid "Reload"
+msgstr "Перезагрузить"

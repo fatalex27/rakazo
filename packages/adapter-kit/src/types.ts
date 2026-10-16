@@ -278,6 +278,8 @@ export interface MemorySnapshot {
     content: string;
     revision: number;
     updatedAt?: string;
+    sourceRunId?: string;
+    sourceThreadId?: string;
   }>;
 }
 
@@ -304,6 +306,8 @@ export interface MemoryCommitRequest {
   content: string;
   /** When set, commit fails if the live document revision is no longer this value. */
   expectedRevision?: number;
+  /** Pins the document generation as well as its revision after delete/recreate. */
+  expectedDocumentId?: string;
   sourceRunId?: string;
   sourceThreadId?: string;
 }
@@ -313,6 +317,14 @@ export interface MemoryRevision {
   path: string;
   revision: number;
   content: string;
+}
+
+export interface MemoryForgetRequest {
+  scope: "bot" | "user";
+  botId?: string;
+  path: string;
+  expectedRevision: number;
+  expectedDocumentId: string;
 }
 
 export interface MemoryExportRequest {
@@ -488,6 +500,18 @@ export interface AgentRunRequest {
     route?: ConnectorRoute,
     observer?: AgentToolExecutionObserver,
   ) => Promise<unknown>;
+  /** Persist a tool slot before dispatch, including local and read-only tools. */
+  reserveToolCall?: (input: {
+    name: string;
+    executionId: string;
+    reservationKey: string;
+    args: Record<string, unknown>;
+    limit: number;
+  }) => Promise<{
+    allowed: boolean;
+    count: number;
+    reason?: "limit" | "lease";
+  }>;
   /** Called after a tool returns; implementations must not persist raw result contents. */
   onToolCompleted?: (completion: AgentToolCompletion) => Promise<void> | void;
   /** Atomically claim durable user steering at the runtime's next safe turn boundary. */

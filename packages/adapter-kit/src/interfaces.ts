@@ -41,6 +41,7 @@ import type {
   MemoryCapabilities,
   MemoryCommitRequest,
   MemoryExportRequest,
+  MemoryForgetRequest,
   MemoryReadRequest,
   MemoryRevision,
   MemorySearchRequest,
@@ -212,6 +213,7 @@ export interface MemoryStore {
   read(request: MemoryReadRequest, context: AdapterContext): Promise<MemorySnapshot>;
   search(request: MemorySearchRequest, context: AdapterContext): Promise<MemorySearchResult[]>;
   commit(request: MemoryCommitRequest, context: AdapterContext): Promise<MemoryRevision>;
+  forget?(request: MemoryForgetRequest, context: AdapterContext): Promise<void>;
   exportMarkdown(
     request: MemoryExportRequest,
     context: AdapterContext,

@@ -86,6 +86,30 @@ export type BoundApprovalRoute = {
   resourceRevision?: string | number;
 };
 
+/** Shared admission predicate for approval dispatch and pre-dispatch budget replay. */
+export function approvalReplayMatch(
+  name: string,
+  approvedKind: string | undefined,
+  request: unknown,
+  marker: string,
+  liveRoute: BoundApprovalRoute | undefined,
+  catalogRemapped: boolean,
+) {
+  const bound = boundDirectApprovalDetails(request, marker);
+  const catalog = catalogApprovalDetails(request, marker);
+  const sameBoundResource = Boolean(
+    bound && liveRoute && approvalRoutesMatch(bound.route, liveRoute),
+  );
+  const sameCatalogTarget = Boolean(catalog && catalogApprovalMatchesLiveRoute(catalog, liveRoute));
+  const matches = Boolean(
+    approvedKind &&
+      (approvedKind === name || sameBoundResource || sameCatalogTarget) &&
+      !approvalReplayPathError(name, catalogRemapped, request, marker, liveRoute) &&
+      !approvalReplayResourceError(name, catalogRemapped, request, liveRoute, marker),
+  );
+  return { matches, sameBoundResource, sameCatalogTarget };
+}
+
 export function catalogApprovalRequest(
   toolName: string,
   args: Record<string, unknown>,

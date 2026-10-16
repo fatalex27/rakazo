@@ -8,6 +8,7 @@ import {
   type SkillSource,
 } from "@rakazo/core";
 import type { PrismaClient } from "@rakazo/db";
+import { listSkillRevisions, writeSkillRevision } from "@rakazo/db";
 import { BUILTIN_AGENT_SKILLS } from "./builtin-skills.js";
 
 export const SKILL_TOOL_NAMES = new Set([
@@ -15,6 +16,8 @@ export const SKILL_TOOL_NAMES = new Set([
   "skill_create",
   "skill_update",
   "skill_delete",
+  "skill_history",
+  "skill_restore",
 ]);
 
 /** Match CreateAgentSkillInput / UpdateAgentSkillInput / parseSkillMd bounds. */
@@ -33,6 +36,7 @@ type AgentSkillRow = {
   description: string;
   content: string;
   source: string;
+  revision?: number;
 };
 
 function asSource(value: string): SkillSource {
@@ -40,10 +44,11 @@ function asSource(value: string): SkillSource {
   return "user";
 }
 
-function toRecord(row: AgentSkillRow): SkillRecord & { id: string } {
+function toRecord(row: AgentSkillRow): SkillRecord & { id: string; revision: number } {
   const source = asSource(row.source);
   return {
     id: row.id,
+    revision: row.revision ?? 1,
     name: row.name,
     description: row.description,
     content: row.content,
@@ -52,9 +57,10 @@ function toRecord(row: AgentSkillRow): SkillRecord & { id: string } {
   };
 }
 
-function builtinRecords(): Array<SkillRecord & { id: string }> {
+function builtinRecords(): Array<SkillRecord & { id: string; revision: number }> {
   return BUILTIN_AGENT_SKILLS.map((skill) => ({
     id: `builtin:${skill.name}`,
+    revision: 1,
     name: skill.name,
     description: skill.description,
     content: skill.content,
@@ -85,7 +91,7 @@ function rejectInvalidSkillFields(name: string, description: string): string | u
 export async function listAgentSkillRecords(
   prisma: PrismaClient,
   owner: SkillOwner,
-): Promise<Array<SkillRecord & { id: string }>> {
+): Promise<Array<SkillRecord & { id: string; revision: number }>> {
   const rows = await prisma.agentSkill.findMany({
     where: { spaceId: owner.spaceId, userId: owner.userId },
     orderBy: [{ name: "asc" }, { id: "asc" }],
@@ -97,7 +103,7 @@ async function findOwnedSkill(
   prisma: PrismaClient,
   owner: SkillOwner,
   input: { skillId?: string; name?: string },
-): Promise<(SkillRecord & { id: string }) | null> {
+): Promise<(SkillRecord & { id: string; revision: number }) | null> {
   const skills = await listAgentSkillRecords(prisma, owner);
   if (input.skillId) {
     return skills.find((skill) => skill.id === input.skillId) ?? null;
@@ -119,6 +125,7 @@ export async function skillReadFromTool(
     source: skill.source,
     readOnly: skill.readOnly,
     content: skill.content,
+    revision: skill.revision,
   };
 }
 
@@ -189,6 +196,7 @@ export async function skillUpdateFromTool(
     description?: string;
     body?: string;
     content?: string;
+    expectedRevision: number;
   },
 ): Promise<Record<string, unknown>> {
   const existing = await findOwnedSkill(prisma, owner, {
@@ -242,42 +250,83 @@ export async function skillUpdateFromTool(
 
   try {
     // Re-scope mutate to owner + user source so a stale id cannot cross tenants.
-    const updated = await prisma.agentSkill.updateMany({
-      where: {
-        id: existing.id,
-        spaceId: owner.spaceId,
-        userId: owner.userId,
-        source: "user",
-      },
+    const updated = await writeSkillRevision(prisma, owner, "agent", {
+      skillId: existing.id,
+      expectedRevision: input.expectedRevision,
       data: {
         name: nextName,
         description: nextDescription,
         content: nextContent,
       },
     });
-    if (updated.count !== 1) return { error: "Could not update skill." };
-    return { ok: true, id: existing.id, name: nextName, description: nextDescription };
-  } catch {
-    return { error: "Could not update skill." };
+    return {
+      ok: true,
+      id: existing.id,
+      name: nextName,
+      description: nextDescription,
+      revision: updated.revision,
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Could not update skill." };
+  }
+}
+
+export async function skillHistoryFromTool(
+  prisma: PrismaClient,
+  owner: SkillOwner,
+  input: { name?: string; skillId?: string; revision?: number },
+) {
+  const skill = await findOwnedSkill(prisma, owner, input);
+  if (!skill) return { error: "Skill not found." };
+  if (skill.readOnly) return { error: "Builtin and plugin skills are read-only." };
+  return { revisions: await listSkillRevisions(prisma, owner, "agent", skill.id, input.revision) };
+}
+
+export async function skillRestoreFromTool(
+  prisma: PrismaClient,
+  owner: SkillOwner,
+  input: { name?: string; skillId?: string; targetRevision: number; expectedRevision: number },
+) {
+  const skill = await findOwnedSkill(prisma, owner, input);
+  if (!skill) return { error: "Skill not found." };
+  if (skill.readOnly) return { error: "Builtin and plugin skills are read-only." };
+  try {
+    const row = await writeSkillRevision(prisma, owner, "agent", { ...input, skillId: skill.id });
+    return {
+      ok: true,
+      id: row.id,
+      name: row.name,
+      revision: row.revision,
+      restoredFrom: input.targetRevision,
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "Could not restore skill." };
   }
 }
 
 export async function skillDeleteFromTool(
   prisma: PrismaClient,
   owner: SkillOwner,
-  input: { name?: string; skillId?: string },
+  input: { name?: string; skillId?: string; expectedRevision: number },
 ): Promise<Record<string, unknown>> {
   const existing = await findOwnedSkill(prisma, owner, input);
   if (!existing) return { error: "Skill not found." };
   if (existing.readOnly || existing.source !== "user" || existing.id.startsWith("builtin:")) {
     return { error: "Builtin and plugin skills are read-only." };
   }
+  if (
+    !Number.isSafeInteger(input.expectedRevision) ||
+    input.expectedRevision < 1 ||
+    existing.revision !== input.expectedRevision
+  )
+    return { error: "Skill changed. Read it again before deleting." };
   const deleted = await prisma.agentSkill.deleteMany({
     where: {
       id: existing.id,
       spaceId: owner.spaceId,
       userId: owner.userId,
       source: "user",
+      revision: input.expectedRevision,
     },
   });
   if (deleted.count !== 1) return { error: "Could not delete skill." };

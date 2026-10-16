@@ -3222,6 +3222,8 @@ export function createRouter(deps: RouterDeps) {
             botId: doc.botId ?? undefined,
             path: doc.path,
             content: input.content,
+            expectedRevision: input.expectedRevision,
+            expectedDocumentId: doc.id,
           },
           {
             operationId: "mem",
@@ -3240,6 +3242,35 @@ export function createRouter(deps: RouterDeps) {
           revision: updated.revision,
           updatedAt: new Date().toISOString(),
         };
+      }),
+      remove: authed.memory.remove.handler(async ({ context, input }) => {
+        const doc = await deps.prisma.memoryDocument.findFirst({
+          where: {
+            id: input.documentId,
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+          },
+        });
+        if (!doc) throw new IsolationError();
+        if (!deps.memory.forget)
+          throw new Error("This memory store does not support deleting documents.");
+        await deps.memory.forget(
+          {
+            scope: doc.scope as "bot" | "user",
+            botId: doc.botId ?? undefined,
+            path: doc.path,
+            expectedRevision: input.expectedRevision,
+            expectedDocumentId: doc.id,
+          },
+          {
+            operationId: "memory-delete",
+            traceId: "memory-delete",
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            signal: new AbortController().signal,
+          },
+        );
+        return { ok: true as const };
       }),
       exportMarkdown: authed.memory.exportMarkdown.handler(async ({ context, input }) => {
         const docs = await deps.prisma.memoryDocument.findMany({
@@ -3808,6 +3839,12 @@ export function createRouter(deps: RouterDeps) {
       }),
     },
     skills: {
+      history: authed.skills.history.handler(async ({ context, input }) =>
+        taughtSkills.history(context.actor, input.skillId, input.revision),
+      ),
+      restore: authed.skills.restore.handler(async ({ context, input }) =>
+        taughtSkills.restore(context.actor, input),
+      ),
       list: authed.skills.list.handler(async ({ context, input }) => {
         await repos.getBot(context.actor, input.botId);
         return taughtSkills.list(context.actor, input.botId);
@@ -3832,10 +3869,11 @@ export function createRouter(deps: RouterDeps) {
         taughtSkills.updateDraft(context.actor, input.skillId, {
           name: input.name,
           playbook: input.playbook,
+          expectedRevision: input.expectedRevision,
         }),
       ),
       save: authed.skills.save.handler(async ({ context, input }) =>
-        taughtSkills.save(context.actor, input.skillId, input.name),
+        taughtSkills.save(context.actor, input.skillId, input.name, input.expectedRevision),
       ),
       testRun: authed.skills.testRun.handler(async ({ context, input }) =>
         taughtSkills.testRun(context.actor, input.skillId, input.prompt),
@@ -3845,6 +3883,12 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     agentSkills: {
+      history: authed.agentSkills.history.handler(async ({ context, input }) =>
+        agentSkills.history(context.actor, input.skillId, input.revision),
+      ),
+      restore: authed.agentSkills.restore.handler(async ({ context, input }) =>
+        agentSkills.restore(context.actor, input),
+      ),
       list: authed.agentSkills.list.handler(async ({ context }) => agentSkills.list(context.actor)),
       get: authed.agentSkills.get.handler(async ({ context, input }) =>
         agentSkills.get(context.actor, input),
@@ -3856,7 +3900,7 @@ export function createRouter(deps: RouterDeps) {
         agentSkills.update(context.actor, input),
       ),
       remove: authed.agentSkills.remove.handler(async ({ context, input }) =>
-        agentSkills.remove(context.actor, input.skillId),
+        agentSkills.remove(context.actor, input.skillId, input.expectedRevision),
       ),
     },
     capabilities: {

@@ -39,6 +39,7 @@ export const ProductEventType = z.enum([
   "skill.saved",
   "effect.recorded",
   "agent.tool.called",
+  "agent.tool.reserved",
   "agent.tool.completed",
   "effect.reconciled",
   "usage.recorded",
@@ -57,6 +58,28 @@ export type ProductEventType = z.infer<typeof ProductEventType>;
 export const MessageRole = z.enum(["user", "bot", "system"]);
 export const BotMessageIntent = z.enum(["request", "result", "question", "status", "fyi"]);
 export type BotMessageIntent = z.infer<typeof BotMessageIntent>;
+
+/** A peer's account of the work, never a grant of permissions. Null means unknown. */
+export const GroupHandoffDetails = z.object({
+  goal: z.string().nullable(),
+  completionCriterion: z.string().nullable(),
+  facts: z.array(z.object({ fact: z.string(), source: z.string().nullable() })).nullable(),
+  done: z.array(z.string()).nullable(),
+  openQuestions: z.array(z.string()).nullable(),
+  constraints: z.array(z.string()).nullable(),
+  authority: z.string().nullable(),
+});
+export const GroupHandoffContext = GroupHandoffDetails.extend({
+  origin: z.object({
+    runId: Id,
+    taskId: Id,
+    sourceMessageId: Id.nullable(),
+    originalPrompt: z.string(),
+  }),
+  nextOwnerBotId: Id,
+  truncatedFields: z.array(z.string()),
+});
+export type GroupHandoffContext = z.infer<typeof GroupHandoffContext>;
 
 export const MAX_CHART_DATA_ROWS = 5_000;
 
@@ -205,6 +228,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("skill_draft"),
     skillId: Id,
+    revision: z.number().int().positive().optional(),
     name: z.string(),
     goal: z.string(),
     playbook: z.object({
@@ -251,6 +275,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     text: z.string(),
     /** Links ownership transfers in one user-started group turn. */
     hop: z.number().int().positive().optional(),
+    context: GroupHandoffContext.optional(),
   }),
   z.object({
     /** A group-chat message delivered into a member bot's own thread. */

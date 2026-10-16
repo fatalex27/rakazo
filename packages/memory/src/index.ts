@@ -2,6 +2,7 @@ import type {
   AdapterContext,
   MemoryCommitRequest,
   MemoryExportRequest,
+  MemoryForgetRequest,
   MemoryReadRequest,
   MemoryRevision,
   MemorySearchRequest,
@@ -35,6 +36,13 @@ export class MarkdownMemoryStore implements MemoryStore {
         ...(request.path ? { path: request.path } : {}),
       },
       orderBy: [{ updatedAt: "desc" }, { path: "asc" }],
+      include: {
+        revisions: {
+          orderBy: { revision: "desc" },
+          take: 1,
+          select: { sourceRunId: true, sourceThreadId: true },
+        },
+      },
     });
     return {
       documents: documents.map((doc) => ({
@@ -43,6 +51,10 @@ export class MarkdownMemoryStore implements MemoryStore {
         content: doc.content,
         revision: doc.revision,
         updatedAt: doc.updatedAt.toISOString(),
+        ...(doc.revisions[0]?.sourceRunId ? { sourceRunId: doc.revisions[0].sourceRunId } : {}),
+        ...(doc.revisions[0]?.sourceThreadId
+          ? { sourceThreadId: doc.revisions[0].sourceThreadId }
+          : {}),
       })),
     };
   }
@@ -88,6 +100,11 @@ export class MarkdownMemoryStore implements MemoryStore {
             const live = existing?.revision ?? 0;
             if (live !== request.expectedRevision) throw new Error(MEMORY_REVISION_CONFLICT_ERROR);
           }
+          if (
+            request.expectedDocumentId !== undefined &&
+            existing?.id !== request.expectedDocumentId
+          )
+            throw new Error(MEMORY_REVISION_CONFLICT_ERROR);
           const doc = existing
             ? await tx.memoryDocument.update({
                 where: { id: existing.id },
@@ -130,6 +147,49 @@ export class MarkdownMemoryStore implements MemoryStore {
     for (const doc of snapshot.documents) {
       yield { path: doc.path, content: new TextEncoder().encode(doc.content) };
     }
+  }
+
+  async forget(request: MemoryForgetRequest, context: AdapterContext): Promise<void> {
+    if (
+      !Number.isSafeInteger(request.expectedRevision) ||
+      request.expectedRevision < 1 ||
+      !request.expectedDocumentId ||
+      (request.scope === "bot" && !request.botId)
+    ) {
+      throw new Error("A document scope and current revision are required.");
+    }
+    await withTransactionRetry(() =>
+      this.prisma.$transaction(
+        async (tx) => {
+          const existing = await tx.memoryDocument.findFirst({
+            where: {
+              spaceId: context.spaceId,
+              userId: context.userId,
+              scope: request.scope,
+              botId: request.scope === "bot" ? request.botId : null,
+              path: request.path,
+            },
+          });
+          if (
+            !existing ||
+            existing.revision !== request.expectedRevision ||
+            existing.id !== request.expectedDocumentId
+          )
+            throw new Error(MEMORY_REVISION_CONFLICT_ERROR);
+          // The database cascades the document's revisions. No semantic-provider data is touched.
+          const removed = await tx.memoryDocument.deleteMany({
+            where: {
+              id: existing.id,
+              revision: request.expectedRevision,
+              spaceId: context.spaceId,
+              userId: context.userId,
+            },
+          });
+          if (removed.count !== 1) throw new Error(MEMORY_REVISION_CONFLICT_ERROR);
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
+    );
   }
 
   async importMarkdown(

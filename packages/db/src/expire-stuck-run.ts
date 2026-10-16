@@ -33,6 +33,8 @@ export async function expireStuckRun(
   tx: Prisma.TransactionClient,
   input: ExpireStuckRunInput,
 ): Promise<ExpireStuckRunResult | null> {
+  // Human questions and approvals remain pending until answered or explicitly stopped.
+  if (input.status === "waiting_input") return null;
   await tx.$queryRaw`SELECT id FROM threads WHERE id = ${input.threadId} FOR UPDATE`;
   const current = await tx.run.findUnique({
     where: { id: input.runId },

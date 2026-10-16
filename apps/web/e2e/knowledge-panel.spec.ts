@@ -1,21 +1,24 @@
 import { readFile } from "node:fs/promises";
 import { expect, test } from "@playwright/test";
 import type { MemoryDocument } from "@rakazo/contracts";
-import {
-  activeBotId,
-  captureScreenshot,
-  completeOnboarding,
-  openUserSettings,
-  rpc,
-  signup,
-} from "./helpers";
+import { activeBotId, captureScreenshot, openUserSettings, rpc, signup } from "./helpers";
 
 test("memory and skills are readable and editable in the app", async ({ page }, testInfo) => {
   const stamp = Date.now();
   const userName = `Knowledge ${stamp}`;
   await signup(page, `knowledge-${stamp}@rakazo.test`, "password12", userName);
-  await completeOnboarding(page);
-  await page.goto("/app");
+  await page.waitForURL(/\/(onboarding|app)/, { timeout: 20_000 });
+  // This journey starts with an existing bot; first-bot onboarding has its own coverage.
+  const seededBot = await rpc<{ id: string }>(page, "bots/create", {
+    name: "Chief",
+    title: "",
+    description: "",
+    instructions: "",
+    notifyOnFinish: true,
+    computerMode: "team",
+    spawnKey: `knowledge-fixture-${stamp}`,
+  });
+  await page.goto(`/app/${seededBot.id}`);
   await page.waitForURL(/\/app\/[^/]+$/);
 
   // Space-wide documents live in Settings → Memory. Open that before bot
@@ -64,7 +67,18 @@ test("memory and skills are readable and editable in the app", async ({ page }, 
   // Export must fetch fresh content and exclude the bot's private document.
   const sharedDocument = sharedDocuments.find((doc) => doc.path === "MEMORY.md")!;
   const latestMarker = `Latest shared memory ${stamp}`;
-  await rpc(page, "memory/update", { documentId: sharedDocument.id, content: latestMarker });
+  await rpc(page, "memory/update", {
+    documentId: sharedDocument.id,
+    content: latestMarker,
+    expectedRevision: sharedDocument.revision,
+  });
+  // The open editor still holds revision 2: a stale delete must preserve revision 3.
+  await spaceDocs.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(spaceDocs.getByText("Could not delete", { exact: true })).toBeVisible();
+  await expect(memoryRow).toBeVisible();
+  expect(await rpc<MemoryDocument[]>(page, "memory/list", { scope: "user" })).toContainEqual(
+    expect.objectContaining({ id: sharedDocument.id, content: latestMarker, revision: 3 }),
+  );
   const downloadPromise = page.waitForEvent("download");
   await spaceDocs.getByRole("button", { name: "Download as markdown" }).click();
   const download = await downloadPromise;
@@ -74,7 +88,20 @@ test("memory and skills are readable and editable in the app", async ({ page }, 
   expect(exported).not.toContain(marker);
   expect(exported).not.toContain("# Chief");
   await page.getByLabel("Close memory settings").click();
+  await openUserSettings(page, "memory");
+  await memoryRow.click();
+  await expect(spaceDocs.getByText("rev 3")).toBeVisible();
+  await captureScreenshot(page, testInfo, "86-memory-delete-control");
+  await spaceDocs.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(memoryRow).toHaveCount(0);
+  expect(await rpc<MemoryDocument[]>(page, "memory/list", { scope: "user" })).toEqual([]);
+  await page.getByLabel("Close memory settings").click();
   await expect(page.getByLabel("Close memory settings")).toHaveCount(0);
+  await openUserSettings(page, "memory");
+  await expect(
+    page.getByTestId("space-memory-documents").getByRole("button", { name: /MEMORY\.md/ }),
+  ).toHaveCount(0);
+  await page.getByLabel("Close memory settings").click();
 
   // The bot's Knowledge section lives under Advanced in its settings panel.
   await page

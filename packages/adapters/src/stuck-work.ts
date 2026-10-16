@@ -106,6 +106,7 @@ export async function reconcileStuckWork(deps: {
       (notice) => notice.runId === run.id && noticeIsDelivered(notice.payload, run.updatedAt),
     );
     const action = stuckWorkAction({
+      status: run.status,
       ageMs: stuckWorkAgeMs(run.updatedAt, deps.now),
       alreadyNotified,
     });

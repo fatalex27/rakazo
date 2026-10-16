@@ -2,6 +2,7 @@ import type { ConnectorTool } from "@rakazo/adapter-kit";
 import { approvalEffectKey } from "@rakazo/core/node/approval-effect-key";
 import { describe, expect, it } from "vitest";
 import {
+  approvalReplayMatch,
   approvalReplayResourceError,
   approvedCatalogReplay,
   approvedReplayArgs,
@@ -21,6 +22,50 @@ import {
 } from "./lazy-tool-catalog.js";
 
 describe("executor approval replay", () => {
+  it.each(["catalog-to-direct", "renamed-bound"])(
+    "admits the same validated %s replay before budget reservation",
+    (variant) => {
+      const route = {
+        connectorId: "installed",
+        resourceId: "fixture-resource",
+        resourceRevision: 2,
+        toolName: "write",
+      };
+      const request =
+        variant === "catalog-to-direct"
+          ? catalogApprovalRequest(
+              "installed_execute_tool",
+              { id: "fixture-resource:write", arguments: { text: "approved" } },
+              "marker",
+              route,
+            )
+          : boundDirectApprovalRequest(route, { text: "approved" }, "marker");
+      expect(
+        approvalReplayMatch("renamed_write", "original_write", request, "marker", route, false)
+          .matches,
+      ).toBe(true);
+      expect(
+        approvalReplayMatch(
+          "renamed_write",
+          "original_write",
+          request,
+          "marker",
+          { ...route, resourceRevision: 3 },
+          false,
+        ).matches,
+      ).toBe(false);
+      expect(
+        approvalReplayMatch(
+          "renamed_write",
+          "original_write",
+          request,
+          "marker",
+          { ...route, resourceId: "foreign-resource" },
+          false,
+        ).matches,
+      ).toBe(false);
+    },
+  );
   it.each([
     ["MCP", "install-mcp", "notes.write"],
     ["API", "install-api", "createContact"],

@@ -12,23 +12,62 @@ import {
 } from "./stuck-work.js";
 
 describe("stuck work age", () => {
+  it("keeps human input pending indefinitely and reminds only once", () => {
+    expect(
+      stuckWorkAction({
+        status: "waiting_input",
+        ageMs: 30 * STUCK_WORK_EXPIRE_AFTER_MS,
+        alreadyNotified: false,
+      }),
+    ).toBe("notify");
+    expect(
+      stuckWorkAction({
+        status: "waiting_input",
+        ageMs: 30 * STUCK_WORK_EXPIRE_AFTER_MS,
+        alreadyNotified: true,
+      }),
+    ).toBe("none");
+    expect(
+      stuckWorkAction({
+        status: "waiting_takeover",
+        ageMs: STUCK_WORK_EXPIRE_AFTER_MS,
+        alreadyNotified: true,
+      }),
+    ).toBe("expire");
+  });
   it("keeps the reminder well before the cancellation", () => {
     expect(STUCK_WORK_EXPIRE_AFTER_MS).toBeGreaterThan(STUCK_WORK_NOTIFY_AFTER_MS);
   });
 
   it("stays quiet until the reminder, then cancels at the longer limit", () => {
-    expect(stuckWorkAction({ ageMs: STUCK_WORK_NOTIFY_AFTER_MS - 1, alreadyNotified: false })).toBe(
-      "none",
-    );
-    expect(stuckWorkAction({ ageMs: STUCK_WORK_NOTIFY_AFTER_MS, alreadyNotified: false })).toBe(
-      "notify",
-    );
-    expect(stuckWorkAction({ ageMs: STUCK_WORK_NOTIFY_AFTER_MS, alreadyNotified: true })).toBe(
-      "none",
-    );
-    expect(stuckWorkAction({ ageMs: STUCK_WORK_EXPIRE_AFTER_MS, alreadyNotified: true })).toBe(
-      "expire",
-    );
+    expect(
+      stuckWorkAction({
+        status: "queued",
+        ageMs: STUCK_WORK_NOTIFY_AFTER_MS - 1,
+        alreadyNotified: false,
+      }),
+    ).toBe("none");
+    expect(
+      stuckWorkAction({
+        status: "queued",
+        ageMs: STUCK_WORK_NOTIFY_AFTER_MS,
+        alreadyNotified: false,
+      }),
+    ).toBe("notify");
+    expect(
+      stuckWorkAction({
+        status: "queued",
+        ageMs: STUCK_WORK_NOTIFY_AFTER_MS,
+        alreadyNotified: true,
+      }),
+    ).toBe("none");
+    expect(
+      stuckWorkAction({
+        status: "queued",
+        ageMs: STUCK_WORK_EXPIRE_AFTER_MS,
+        alreadyNotified: true,
+      }),
+    ).toBe("expire");
   });
 
   it("treats only queued and human waits as stuck", () => {

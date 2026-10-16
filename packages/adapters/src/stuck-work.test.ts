@@ -116,8 +116,8 @@ describe("reconcileStuckWork", () => {
     ]);
   });
 
-  it("does not send again when this episode was already reminded", async () => {
-    const run = candidate("waiting_input", 5);
+  it.each([5, 25, 24 * 30])("keeps a reminded human input wait after %i hours", async (hours) => {
+    const run = candidate("waiting_input", hours);
     const stamps = [
       {
         runId: run.id,

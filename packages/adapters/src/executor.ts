@@ -132,9 +132,9 @@ import {
 import { buildApprovalAskBlock } from "./approval-ask.js";
 import {
   approvalPausedToolResult,
+  approvalReplayMatch,
   approvalReplayPathError,
   approvalReplayResourceError,
-  approvalRoutesMatch,
   approvedCatalogReplay,
   approvedReplayArgs,
   boundDirectApprovalDetails,
@@ -142,7 +142,6 @@ import {
   catalogApprovalConnectorId,
   catalogApprovalDetails,
   catalogApprovalInnerArgs,
-  catalogApprovalMatchesLiveRoute,
   catalogApprovalRequest,
   catalogExecuteToolName,
   catalogIdForRoute,
@@ -261,7 +260,12 @@ import {
 } from "./mcp-server-tool.js";
 import { loadAgentMemoryContext } from "./memory-context.js";
 import type { MemoryProviderResolver } from "./memory-provider-factory.js";
-import { selectMemoryTools } from "./memory-tools.js";
+import {
+  forgetMemoryDocumentFromTool,
+  readMemoryDocumentFromTool,
+  saveBotMemoryFromTool,
+  selectMemoryTools,
+} from "./memory-tools.js";
 import {
   isCatalogModelChoice,
   pinnedModelCredentialError,
@@ -343,7 +347,9 @@ import {
   listAgentSkillRecords,
   skillCreateFromTool,
   skillDeleteFromTool,
+  skillHistoryFromTool,
   skillReadFromTool,
+  skillRestoreFromTool,
   skillUpdateFromTool,
 } from "./skill-tools.js";
 import type { TakeoverResumeCheckpoint } from "./takeover-resume.js";
@@ -371,6 +377,7 @@ import {
   listBoardTickets,
   updateTicket,
 } from "./ticket-tools.js";
+import { reserveRunToolCall } from "./tool-call-budget.js";
 import { advanceToolCallLoopGuard, loopGuardStopText } from "./tool-loop.js";
 import { textContentArg } from "./tool-text.js";
 import {
@@ -389,6 +396,7 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "computer_observe",
   "list_files",
   "read_file",
+  "read_memory_document",
   "read_history",
   "search_history",
   "request_takeover",
@@ -400,6 +408,7 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "board_tickets",
   "ticket_get",
   "skill_read",
+  "skill_history",
   "web_search",
   "web_fetch",
   "browser_snapshot",
@@ -3877,7 +3886,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const approvedEffects = await deps.prisma.externalEffect.findMany({
           where: { runId, status: "approved" },
           orderBy: APPROVED_EFFECT_REPLAY_ORDER,
-          select: { kind: true, request: true },
+          select: { id: true, kind: true, request: true },
         });
         const approvedEffectReplays = createApprovedEffectReplayQueue(approvedEffects);
         const baseComputerInstruction = persistentComputerInstruction({
@@ -4053,6 +4062,17 @@ export function createRunExecutor(deps: ExecutorDeps) {
           observer?: AgentToolExecutionObserver,
         ) => {
           context.signal.throwIfAborted();
+          // Cancellation and reassignment can commit between streamed tool calls,
+          // well before the periodic lease heartbeat notices the change.
+          const toolRun = await deps.prisma.run.findUnique({
+            where: { id: runId },
+            select: { status: true, leaseOwner: true, leaseFence: true },
+          });
+          if (!mayOpenModelStream(toolRun, workerId, fence, !leaseValid)) {
+            leaseValid = false;
+            runAbortController?.abort();
+            return { error: "This run no longer owns the task. No tool was executed." };
+          }
           if (handedOff) {
             return {
               error: "This stage was handed off. End the turn without more tool calls.",
@@ -4167,16 +4187,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   toolName: connectorCall.route.toolName,
                 }
               : undefined;
-          const nextBound = boundDirectApprovalDetails(nextApprovedRequest, CATALOG_APPROVAL_TOOL);
-          const nextCatalog = catalogApprovalDetails(nextApprovedRequest, CATALOG_APPROVAL_TOOL);
           // After collision uniquify, the live tool name may differ from the stored effect
           // kind while still targeting the same bound connector resource.
-          const sameBoundResource = Boolean(
-            nextBound && liveRoute && approvalRoutesMatch(nextBound.route, liveRoute),
-          );
-          // After catalog shrink, a catalog approval may resume as the matching direct tool.
-          const sameCatalogTarget = Boolean(
-            nextCatalog && catalogApprovalMatchesLiveRoute(nextCatalog, liveRoute),
+          const { sameBoundResource, sameCatalogTarget } = approvalReplayMatch(
+            name,
+            nextApprovedTool,
+            nextApprovedRequest,
+            CATALOG_APPROVAL_TOOL,
+            liveRoute,
+            catalogRemapped,
           );
           if (
             nextApprovedTool &&
@@ -5143,19 +5162,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
             }, finish);
           }
           if (name === "remember") {
-            await deps.memory.commit(
-              {
-                scope: "bot",
-                botId: bot.id,
-                path: String(args.path ?? "MEMORY.md"),
-                content: String(args.content ?? ""),
-                sourceRunId: runId,
-                sourceThreadId: thread.id,
-              },
-              context,
+            return finish(
+              await saveBotMemoryFromTool(deps.memory, bot.id, args, context, thread.id),
             );
-            return finish({ ok: true });
           }
+          if (name === "read_memory_document")
+            return finish(await readMemoryDocumentFromTool(deps.memory, bot.id, args, context));
+          if (name === "forget_memory_document")
+            return finish(await forgetMemoryDocumentFromTool(deps.memory, bot.id, args, context));
           if (name === "save_shared_memory") {
             const invalid = sharedMemorySaveError(args);
             if (invalid) return finish({ error: invalid });
@@ -5171,6 +5185,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   path,
                   content: String(args.content ?? ""),
                   expectedRevision,
+                  expectedDocumentId: snapshot.documents[0]?.id,
                   sourceRunId: runId,
                   sourceThreadId: thread.id,
                 },
@@ -5440,10 +5455,36 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   name: args.name ? String(args.name) : undefined,
                   skillId: args.skillId ? String(args.skillId) : undefined,
                   newName: args.newName ? String(args.newName) : undefined,
+                  expectedRevision: Number(args.expectedRevision),
                   description:
                     args.description !== undefined ? String(args.description) : undefined,
                   body: args.body !== undefined ? String(args.body) : undefined,
                   content: args.content ? String(args.content) : undefined,
+                },
+              ),
+            );
+          }
+          if (name === "skill_history") {
+            return skillHistoryFromTool(
+              deps.prisma,
+              { spaceId: run.spaceId, userId: run.userId },
+              {
+                name: args.name ? String(args.name) : undefined,
+                skillId: args.skillId ? String(args.skillId) : undefined,
+                revision: args.revision !== undefined ? Number(args.revision) : undefined,
+              },
+            );
+          }
+          if (name === "skill_restore") {
+            return finish(
+              await skillRestoreFromTool(
+                deps.prisma,
+                { spaceId: run.spaceId, userId: run.userId },
+                {
+                  name: args.name ? String(args.name) : undefined,
+                  skillId: args.skillId ? String(args.skillId) : undefined,
+                  targetRevision: Number(args.targetRevision),
+                  expectedRevision: Number(args.expectedRevision),
                 },
               ),
             );
@@ -5459,6 +5500,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 {
                   name: args.name ? String(args.name) : undefined,
                   skillId: args.skillId ? String(args.skillId) : undefined,
+                  expectedRevision: Number(args.expectedRevision),
                 },
               ),
             );
@@ -6236,7 +6278,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
             const result = await handoffToGroupBot(deps, run, thread.groupId, {
               bot_id: args.bot_id ? String(args.bot_id) : undefined,
               confirm_name: args.confirm_name ? String(args.confirm_name) : undefined,
-              message: String(args.message ?? ""),
+              message: redactSecrets(String(args.message ?? ""), runSecrets),
+              context: redactToolArgsForReview({ context: args.context }, runSecrets).context,
             });
             if ("ok" in result && result.ok) handedOff = true;
             return finish(result);
@@ -6599,6 +6642,71 @@ export function createRunExecutor(deps: ExecutorDeps) {
               allowSilentEmpty: allowSilentEmptyRun,
               emptyResponseText,
               executeTool: scripted ? undefined : applyTool,
+              reserveToolCall: scripted
+                ? undefined
+                : async (input) => {
+                    const pendingRequest = approvedEffectReplays.nextRequest();
+                    const pendingKind = approvedEffectReplays.nextToolName();
+                    let liveName = input.name;
+                    let liveRoute = connectorTools.get(input.name)?.route;
+                    let catalogRemapped = false;
+                    const onCatalog = Boolean(
+                      liveRoute && !liveRoute.resourceId && liveRoute.toolName === CATALOG_EXECUTE,
+                    );
+                    if (pendingKind && onCatalog && deps.connector?.resolveCall) {
+                      const replay = approvedCatalogReplay(
+                        approvedEffectReplays,
+                        input.name,
+                        CATALOG_APPROVAL_TOOL,
+                        true,
+                      );
+                      if (!replay.error && replay.args) {
+                        const resolved = await deps.connector.resolveCall(
+                          {
+                            tool: input.name,
+                            args: replay.args,
+                            executionId: input.executionId,
+                            route: liveRoute,
+                          },
+                          context,
+                        );
+                        if (resolved && !BUILTIN_AGENT_TOOL_NAMES.has(resolved.tool.name)) {
+                          liveName = resolved.tool.name;
+                          liveRoute = resolved.call.route;
+                          catalogRemapped = true;
+                        }
+                      }
+                    }
+                    const route =
+                      liveRoute?.resourceId && liveRoute.connectorId && liveRoute.toolName
+                        ? {
+                            connectorId: liveRoute.connectorId,
+                            resourceId: liveRoute.resourceId,
+                            resourceRevision: liveRoute.resourceRevision,
+                            toolName: liveRoute.toolName,
+                          }
+                        : undefined;
+                    const approved = approvalReplayMatch(
+                      liveName,
+                      pendingKind,
+                      pendingRequest,
+                      CATALOG_APPROVAL_TOOL,
+                      route,
+                      catalogRemapped,
+                    ).matches
+                      ? approvedEffects.find((effect) => effect.request === pendingRequest)
+                      : undefined;
+                    return reserveRunToolCall(
+                      deps.prisma,
+                      { id: runId, spaceId: run.spaceId, threadId: thread.id, botId: bot.id },
+                      { owner: workerId, fence },
+                      {
+                        ...input,
+                        approvedEffectId: approved?.id,
+                        approvedEffectKind: approved?.kind,
+                      },
+                    );
+                  },
               resolveModel: scripted
                 ? undefined
                 : (provider, modelId) =>
@@ -7499,6 +7607,8 @@ export function selectBuiltinToolsForRun(options: {
       (!options.messagingChannelRun ||
         (![
           "remember",
+          "read_memory_document",
+          "forget_memory_document",
           "save_shared_memory",
           "save_memory",
           "recall_memory",

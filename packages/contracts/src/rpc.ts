@@ -73,6 +73,7 @@ import {
   ModelOAuthBeginSchema,
   REPLY_QUOTE_MAX_LENGTH,
   ReorderBotsInput,
+  RestoreSkillInput,
   RoutineSchema,
   ScratchpadItemSchema,
   ScratchpadItemStatusSchema,
@@ -81,6 +82,7 @@ import {
   ServerUpdateRunSchema,
   ServerUpdateStatusSchema,
   SkillPlaybookSchema,
+  SkillRevisionSchema,
   SpaceMemoryConfigSchema,
   SpaceNavigationSchema,
   SpaceSchema,
@@ -475,8 +477,17 @@ export const appContract = {
       .input(z.object({ botId: Id.optional(), scope: z.enum(["bot", "user"]).optional() }))
       .output(z.array(MemoryDocumentSchema)),
     update: oc
-      .input(z.object({ documentId: Id, content: z.string() }))
+      .input(
+        z.object({
+          documentId: Id,
+          content: z.string(),
+          expectedRevision: z.number().int().min(1),
+        }),
+      )
       .output(MemoryDocumentSchema),
+    remove: oc
+      .input(z.object({ documentId: Id, expectedRevision: z.number().int().min(1) }))
+      .output(z.object({ ok: z.literal(true) })),
     exportMarkdown: oc.input(z.object({ botId: Id.optional() })).output(z.string()),
     providerConfig: oc.output(SpaceMemoryConfigSchema.nullable()),
     connectProvider: oc
@@ -593,6 +604,10 @@ export const appContract = {
     comments: oc.input(z.object({ ticketId: Id })).output(z.array(TicketCommentSchema)),
   },
   skills: {
+    history: oc
+      .input(z.object({ skillId: Id, revision: z.number().int().positive().optional() }))
+      .output(z.array(SkillRevisionSchema)),
+    restore: oc.input(RestoreSkillInput).output(TaughtSkillSchema),
     list: oc.input(botId).output(z.array(TaughtSkillSchema)),
     get: oc.input(z.object({ skillId: Id })).output(TaughtSkillSchema),
     start: oc
@@ -607,13 +622,20 @@ export const appContract = {
       .input(
         z.object({
           skillId: Id,
+          expectedRevision: z.number().int().positive(),
           name: z.string().optional(),
           playbook: SkillPlaybookSchema,
         }),
       )
       .output(TaughtSkillSchema),
     save: oc
-      .input(z.object({ skillId: Id, name: z.string().optional() }))
+      .input(
+        z.object({
+          skillId: Id,
+          name: z.string().optional(),
+          expectedRevision: z.number().int().positive(),
+        }),
+      )
       .output(TaughtSkillSchema),
     testRun: oc
       .input(z.object({ skillId: Id, prompt: z.string().optional() }))
@@ -622,6 +644,10 @@ export const appContract = {
   },
   /** Claude Agent Skills (SKILL.md recipes) shared across assistants (not taught/demo skills). Pi already understands this format; we persist and inject them. */
   agentSkills: {
+    history: oc
+      .input(z.object({ skillId: Id, revision: z.number().int().positive().optional() }))
+      .output(z.array(SkillRevisionSchema)),
+    restore: oc.input(RestoreSkillInput).output(AgentSkillSchema),
     list: oc.output(z.array(AgentSkillCatalogEntrySchema)),
     get: oc
       .input(
@@ -640,7 +666,9 @@ export const appContract = {
       .output(AgentSkillSchema),
     create: oc.input(CreateAgentSkillInput).output(AgentSkillSchema),
     update: oc.input(UpdateAgentSkillInput).output(AgentSkillSchema),
-    remove: oc.input(z.object({ skillId: Id })).output(z.object({ ok: z.literal(true) })),
+    remove: oc
+      .input(z.object({ skillId: Id, expectedRevision: z.number().int().positive() }))
+      .output(z.object({ ok: z.literal(true) })),
   },
   capabilities: {
     list: oc.output(z.array(CapabilityInstallSchema)),

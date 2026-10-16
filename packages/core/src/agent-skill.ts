@@ -131,6 +131,8 @@ export function formatSkillsCatalogInstruction(entries: SkillCatalogEntry[]): st
     "Users can force a skill with /Name in the composer. Routines may mention a skill as @Name — that loads the skill at fire time.",
     "Create a skill with skill_create when a multi-step task is worth repeating (or when asked). After creating one, mention /Name so the user can open it.",
     "Only skill_update / skill_delete user-created skills (not builtin or plugin).",
+    "Read before editing or deleting and pass its expectedRevision. Review skill_history before skill_restore; restoring creates a new revision and never reverses external actions.",
+    "Save reusable steps only from verified results or an explicit request. A saved recipe is not proof of successful execution. Include inputs, permission boundaries, failure handling, and how to check the persisted result; never promote a failed attempt into a proven procedure.",
   ].join("\n");
 }
 

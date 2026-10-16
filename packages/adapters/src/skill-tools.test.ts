@@ -5,14 +5,47 @@ import {
   listAgentSkillRecords,
   skillCreateFromTool,
   skillDeleteFromTool,
+  skillHistoryFromTool,
   skillReadFromTool,
+  skillRestoreFromTool,
   skillUpdateFromTool,
 } from "./skill-tools.js";
 
 function makePrisma(rows: Array<Record<string, unknown>> = []) {
-  const store = [...rows];
-  return {
+  const store: Array<Record<string, unknown>> = rows.map((row) => ({
+    revision: 1,
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+    ...row,
+  }));
+  const revisions: Array<Record<string, unknown>> = [];
+  const db = {
+    $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+    skillRevision: {
+      findMany: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        revisions
+          .filter((r) => Object.entries(where).every(([k, v]) => r[k] === v))
+          .slice()
+          .reverse(),
+      ),
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) =>
+        revisions.find((r) => Object.entries(where).every(([k, v]) => r[k] === v)),
+      ),
+      createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
+        for (const row of data)
+          if (
+            !revisions.some(
+              (r) => r.agentSkillId === row.agentSkillId && r.revision === row.revision,
+            )
+          )
+            revisions.push({ createdAt: new Date(), ...row });
+      }),
+    },
     agentSkill: {
+      findFirst: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const row = store.find((r) => Object.entries(where).every(([k, v]) => r[k] === v));
+        return row ? { ...row } : null;
+      }),
       findMany: vi.fn(async ({ where }: { where?: Record<string, string> } = {}) =>
         store
           .filter((row) => {
@@ -29,6 +62,7 @@ function makePrisma(rows: Array<Record<string, unknown>> = []) {
           createdAt: new Date(),
           updatedAt: new Date(),
           source: "user",
+          revision: 1,
           ...data,
         };
         store.push(row);
@@ -74,7 +108,8 @@ function makePrisma(rows: Array<Record<string, unknown>> = []) {
             row.id === where.id &&
             row.spaceId === where.spaceId &&
             row.userId === where.userId &&
-            row.source === where.source,
+            row.source === where.source &&
+            (where.revision === undefined || row.revision === where.revision),
         );
         if (index < 0) return { count: 0 };
         store.splice(index, 1);
@@ -83,6 +118,7 @@ function makePrisma(rows: Array<Record<string, unknown>> = []) {
     },
     _store: store,
   };
+  return db;
 }
 
 const owner = { spaceId: "ws-1", userId: "user-1" };
@@ -92,6 +128,63 @@ describe("skill tools", () => {
 
   beforeEach(() => {
     prisma = makePrisma();
+  });
+
+  it("reviews and restores a synthetic persisted-result workflow without overwriting newer edits", async () => {
+    await skillCreateFromTool(prisma as never, owner, {
+      name: "Verify persisted result",
+      description: "Review a synthetic result",
+      body: "Read result; compare expected state; report source. Never send or spend.",
+    });
+    await expect(
+      skillUpdateFromTool(prisma as never, owner, {
+        name: "Verify persisted result",
+        body: "Incorrect draft",
+        expectedRevision: 1,
+      }),
+    ).resolves.toMatchObject({ revision: 2 });
+    const history = await skillHistoryFromTool(prisma as never, owner, {
+      name: "Verify persisted result",
+    });
+    expect(history).toMatchObject({
+      revisions: [
+        expect.objectContaining({ revision: 2, source: "user" }),
+        expect.objectContaining({ revision: 1 }),
+      ],
+    });
+    await expect(
+      skillRestoreFromTool(prisma as never, owner, {
+        name: "Verify persisted result",
+        targetRevision: 1,
+        expectedRevision: 2,
+      }),
+    ).resolves.toMatchObject({ ok: true, revision: 3, restoredFrom: 1 });
+    await expect(
+      skillReadFromTool(prisma as never, owner, { name: "Verify persisted result" }),
+    ).resolves.toMatchObject({
+      revision: 3,
+      content: expect.stringContaining("Never send or spend"),
+    });
+    await expect(
+      skillRestoreFromTool(prisma as never, owner, {
+        name: "Verify persisted result",
+        targetRevision: 2,
+        expectedRevision: 2,
+      }),
+    ).resolves.toMatchObject({ error: expect.stringContaining("changed") });
+    await expect(
+      skillDeleteFromTool(prisma as never, owner, {
+        name: "Verify persisted result",
+        expectedRevision: 2,
+      }),
+    ).resolves.toMatchObject({ error: expect.stringContaining("changed") });
+    await expect(
+      skillHistoryFromTool(
+        prisma as never,
+        { ...owner, userId: "other" },
+        { name: "Verify persisted result" },
+      ),
+    ).resolves.toEqual({ error: "Skill not found." });
   });
 
   it("creates, reads, updates, and deletes user skills", async () => {
@@ -112,12 +205,16 @@ describe("skill tools", () => {
     expect(String(read.content)).toContain("Summarize yesterday");
 
     const updated = await skillUpdateFromTool(prisma as never, owner, {
+      expectedRevision: 1,
       name: "Daily standup",
       description: "Updated when-to-use",
     });
     expect(updated).toMatchObject({ ok: true, description: "Updated when-to-use" });
 
-    const deleted = await skillDeleteFromTool(prisma as never, owner, { name: "Daily standup" });
+    const deleted = await skillDeleteFromTool(prisma as never, owner, {
+      name: "Daily standup",
+      expectedRevision: 2,
+    });
     expect(deleted).toEqual({ ok: true, name: "Daily standup" });
     expect(await skillReadFromTool(prisma as never, owner, { name: "Daily standup" })).toEqual({
       error: "Skill not found.",
@@ -133,6 +230,7 @@ describe("skill tools", () => {
     });
     await skillCreateFromTool(prisma as never, owner, { content });
     await skillUpdateFromTool(prisma as never, owner, {
+      expectedRevision: 1,
       name: "Review PR",
       body: "1. Read the diff.\n2. Leave comments.",
     });
@@ -149,6 +247,7 @@ describe("skill tools", () => {
     });
     const skillId = String(created.id);
     const mistyped = await skillUpdateFromTool(prisma as never, owner, {
+      expectedRevision: 1,
       skillId,
       name: "Should not apply",
       description: "still original name",
@@ -156,6 +255,7 @@ describe("skill tools", () => {
     expect(mistyped).toMatchObject({ ok: true, name: "Original" });
 
     const renamed = await skillUpdateFromTool(prisma as never, owner, {
+      expectedRevision: 2,
       skillId,
       newName: "Renamed",
     });
@@ -209,11 +309,17 @@ describe("skill tools", () => {
     ]);
     expect(
       await skillUpdateFromTool(prisma as never, owner, {
+        expectedRevision: 1,
         name: "Plugin recipe",
         description: "hijack",
       }),
     ).toEqual({ error: "Builtin and plugin skills are read-only." });
-    expect(await skillDeleteFromTool(prisma as never, owner, { name: "Plugin recipe" })).toEqual({
+    expect(
+      await skillDeleteFromTool(prisma as never, owner, {
+        name: "Plugin recipe",
+        expectedRevision: 1,
+      }),
+    ).toEqual({
       error: "Builtin and plugin skills are read-only.",
     });
   });
@@ -250,11 +356,17 @@ describe("skill tools", () => {
     ).toEqual({ error: 'A skill named "Interrogate" already exists.' });
     expect(
       await skillUpdateFromTool(prisma as never, owner, {
+        expectedRevision: 1,
         name: "Interrogate",
         description: "hijack",
       }),
     ).toEqual({ error: "Builtin and plugin skills are read-only." });
-    expect(await skillDeleteFromTool(prisma as never, owner, { name: "Interrogate" })).toEqual({
+    expect(
+      await skillDeleteFromTool(prisma as never, owner, {
+        name: "Interrogate",
+        expectedRevision: 2,
+      }),
+    ).toEqual({
       error: "Builtin and plugin skills are read-only.",
     });
   });
@@ -291,11 +403,17 @@ describe("skill tools", () => {
     });
     expect(
       await skillUpdateFromTool(prisma as never, owner, {
+        expectedRevision: 1,
         name: "Interrogate",
         description: "still mine",
       }),
     ).toMatchObject({ ok: true });
-    expect(await skillDeleteFromTool(prisma as never, owner, { name: "Interrogate" })).toEqual({
+    expect(
+      await skillDeleteFromTool(prisma as never, owner, {
+        name: "Interrogate",
+        expectedRevision: 2,
+      }),
+    ).toEqual({
       ok: true,
       name: name.trim(),
     });
@@ -328,6 +446,7 @@ describe("skill tools", () => {
     });
     expect(
       await skillUpdateFromTool(prisma as never, owner, {
+        expectedRevision: 1,
         name: "Short",
         newName: longName,
       }),

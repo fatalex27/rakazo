@@ -830,6 +830,8 @@ model TaughtSkill {
   stoppedAt DateTime?
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
+  revision  Int       @default(1)
+  revisions SkillRevision[]
 
   @@index([spaceId, botId])
   @@index([spaceId, botId, status])
@@ -853,10 +855,30 @@ model AgentSkill {
   source      String   @default("user")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  revision    Int      @default(1)
+  revisions   SkillRevision[]
 
   @@index([spaceId, userId])
   // Case-insensitive unique index agent_skills_spaceId_userId_name_lower_key is created in SQL.
   @@map("agent_skills")
+}
+
+/// Immutable recipe history. Current recipe rows remain the execution source.
+model SkillRevision {
+  id             String      @id @default(cuid())
+  agentSkillId   String?
+  agentSkill     AgentSkill? @relation(fields: [agentSkillId], references: [id], onDelete: Cascade)
+  taughtSkillId  String?
+  taughtSkill    TaughtSkill? @relation(fields: [taughtSkillId], references: [id], onDelete: Cascade)
+  revision       Int
+  snapshot       Json
+  source         String
+  restoredFrom   Int?
+  createdAt      DateTime    @default(now())
+
+  @@unique([agentSkillId, revision])
+  @@unique([taughtSkillId, revision])
+  @@map("skill_revisions")
 }
 
 model Connection {
