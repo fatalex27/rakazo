@@ -387,8 +387,14 @@ test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) =>
     .getByRole("button", { name: "Voice", exact: true });
   await expect(voiceButton).toBeVisible();
   await composer.fill("Use the newer report and keep the answer short.");
-  await expect(voiceButton).toHaveCount(0);
+  await expect(voiceButton).toBeVisible();
   await composer.press("Tab");
+  await expect(
+    page.getByTestId("composer-bar").getByRole("button", { name: "Dictate", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(voiceButton).toBeFocused();
+  await page.keyboard.press("Tab");
   await expect(page.getByRole("button", { name: "Send", exact: true })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(
@@ -421,11 +427,13 @@ test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) =>
   await expect(page.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toBeDisabled();
   releaseStopRequest();
-  // Idle Send stays disabled with an empty draft; wait for Stop to leave instead.
+  // Idle voice controls replace Send with an empty draft; wait for Stop to leave.
   await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0, {
     timeout: 30_000,
   });
-  await expect(page.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+  await expect(composer).toBeEnabled();
+  await expect(composer).toHaveValue("");
+  await expect(voiceButton).toBeEnabled();
 
   await page.context().clearCookies();
   await page.goto("/sign-in");

@@ -45,7 +45,14 @@ test("shows peer chips in transcript and opens view-only peer chat", async ({ pa
     )
     .toBe(true);
 
-  await expect(page.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByRole("button", { name: "Stop", exact: true })).toHaveCount(0, {
+    timeout: 60_000,
+  });
+  await expect(composer).toBeEnabled();
+  await expect(composer).toHaveValue("");
+  await expect(
+    page.getByTestId("composer-bar").getByRole("button", { name: "Voice", exact: true }),
+  ).toBeEnabled();
 
   const transcript = page.getByTestId("transcript");
   const chip = transcript

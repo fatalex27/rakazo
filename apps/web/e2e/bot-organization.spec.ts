@@ -183,18 +183,31 @@ test("chat composer controls are vertically centered", async ({ page }, testInfo
 
   const bar = page.getByTestId("composer-bar");
   const composer = page.getByRole("combobox", { name: "Message Chief" });
-  const centers = await bar.evaluate((composerBar) =>
-    ["Attach file", "Message Chief", "Voice", "Send"].map((label) => {
-      const element = composerBar.querySelector<HTMLElement>(`[aria-label="${label}"]`);
-      if (!element) throw new Error(`Missing composer control: ${label}`);
-      const box = element.getBoundingClientRect();
-      return box.top + box.height / 2;
-    }),
-  );
+  const controlCenters = (labels: string[]) =>
+    bar.evaluate(
+      (composerBar, labels) =>
+        labels.map((label) => {
+          const element = composerBar.querySelector<HTMLElement>(`[aria-label="${label}"]`);
+          if (!element) throw new Error(`Missing composer control: ${label}`);
+          const box = element.getBoundingClientRect();
+          return box.top + box.height / 2;
+        }),
+      labels,
+    );
+  const centers = await controlCenters(["Attach file", "Message Chief", "Dictate", "Voice"]);
 
   expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
 
   await composer.fill("Short note");
+  await expect(bar.getByRole("button", { name: "Send", exact: true })).toBeVisible();
+  const draftCenters = await controlCenters([
+    "Attach file",
+    "Message Chief",
+    "Dictate",
+    "Voice",
+    "Send",
+  ]);
+  expect(Math.max(...draftCenters) - Math.min(...draftCenters)).toBeLessThanOrEqual(1);
   await expect(bar).toHaveAttribute("data-expanded", "false");
   await captureScreenshot(page, testInfo, "composer-one-line");
 
@@ -239,6 +252,7 @@ test("chat composer controls are vertically centered", async ({ page }, testInfo
   await composer.fill("");
   await expect(composer).toHaveValue("");
   await expect(bar).toHaveAttribute("data-expanded", "false");
+  await expect(bar.getByRole("button", { name: "Voice", exact: true })).toBeVisible();
 
   await composer.fill(wrappedDraft);
   await expect(bar).toHaveAttribute("data-expanded", "true");
