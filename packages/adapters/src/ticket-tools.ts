@@ -16,6 +16,7 @@ import {
   toTicketDto,
 } from "@rakazo/db";
 import type { TicketChangeNotifier } from "./ticket-changes.js";
+import { cancelPreviousTicketAssignments, prepareTicketAssigneeRun } from "./ticket-wake.js";
 
 type TicketToolDeps = {
   prisma: PrismaClient;
@@ -162,9 +163,9 @@ export async function createTicket(
   if (!(await botInSpace(deps, input.spaceId, data.assigneeBotId)))
     return { error: "Unknown bot." };
   const board = await ensureBoard(deps.prisma, input.spaceId);
-  const row = await deps.prisma.$transaction(async (tx) => {
+  const result = await deps.prisma.$transaction(async (tx) => {
     const number = await allocateTicketNumber(tx, board.id);
-    return tx.ticket.create({
+    const row = await tx.ticket.create({
       data: {
         boardId: board.id,
         spaceId: input.spaceId,
@@ -177,13 +178,20 @@ export async function createTicket(
         createdByUserId: input.userId ?? null,
       },
     });
+    const wakeAssignee = row.assigneeBotId !== input.botId;
+    const wakeRunId = wakeAssignee
+      ? await prepareTicketAssigneeRun(tx, row, board.ticketPrefix)
+      : undefined;
+    return { row, wakeRunId, wakeAssignee };
   });
+  const { row } = result;
   await deps.onTicketChange?.({
     spaceId: input.spaceId,
     boardId: board.id,
     ticketId: row.id,
     assigneeBotId: row.assigneeBotId,
-    wakeAssignee: row.assigneeBotId !== input.botId,
+    wakeAssignee: result.wakeAssignee,
+    wakeRunId: result.wakeRunId,
   });
   return { ticket: toTicketDto(row, board.ticketPrefix) };
 }
@@ -231,9 +239,17 @@ export async function updateTicket(
           : {}),
       },
     });
+    const reassigned =
+      data.assigneeBotId !== undefined && data.assigneeBotId !== current.assigneeBotId;
+    if (reassigned) await cancelPreviousTicketAssignments(tx, row);
+    const wakeAssignee = reassigned && row.assigneeBotId !== input.botId;
+    const wakeRunId = wakeAssignee
+      ? await prepareTicketAssigneeRun(tx, row, board.ticketPrefix)
+      : undefined;
     return {
       row,
-      reassigned: data.assigneeBotId !== undefined && data.assigneeBotId !== current.assigneeBotId,
+      wakeAssignee,
+      wakeRunId,
     };
   });
   if (!result) return { error: "Ticket not found." };
@@ -242,7 +258,8 @@ export async function updateTicket(
     boardId: board.id,
     ticketId: result.row.id,
     assigneeBotId: result.row.assigneeBotId,
-    wakeAssignee: result.reassigned && result.row.assigneeBotId !== input.botId,
+    wakeAssignee: result.wakeAssignee,
+    wakeRunId: result.wakeRunId,
   });
   return { ticket: toTicketDto(result.row, board.ticketPrefix) };
 }

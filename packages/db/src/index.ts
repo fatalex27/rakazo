@@ -20,6 +20,7 @@ export * from "./model-credentials.js";
 export * from "./repos.js";
 export * from "./scope.js";
 export * from "./sessions.js";
+export * from "./skill-revisions.js";
 export * from "./spaces.js";
 export * from "./transaction-retry.js";
 export * from "./usage.js";

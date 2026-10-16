@@ -500,14 +500,45 @@ export const builtinAgentTools: ConnectorTool[] = [
   },
   {
     name: "remember",
-    description: "Store a durable fact in this bot's explicit memory.",
+    description:
+      "Replace a complete document in this bot's durable memory. Save confirmed durable facts with their source/date; label uncertainty and keep temporary work in the scratchpad. Include all facts to keep. Use documentId and expectedRevision from memory context for an existing document, or revision 0 for a new path; read all read_memory_document pages before replacing truncated content. Reconcile a conflict before retrying. Confirm saving only after ok: true.",
     inputSchema: {
       type: "object",
       properties: {
         content: { type: "string" },
         path: { type: "string" },
+        expectedRevision: { type: "integer", minimum: 0 },
+        documentId: { type: "string" },
       },
-      required: ["content"],
+      required: ["content", "expectedRevision"],
+    },
+  },
+  {
+    name: "read_memory_document",
+    description:
+      "Read this bot's native memory document in Unicode character pages, or omit path to list documents. Use scope user only for the current user's shared documents. Follow nextOffset to read the complete document before replacing it; retain its id and revision.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", maxLength: 512 },
+        scope: { type: "string", enum: ["bot", "user"] },
+        offset: { type: "integer", minimum: 0 },
+      },
+    },
+  },
+  {
+    name: "forget_memory_document",
+    description:
+      "Delete one complete native memory document and its revision history after the user's request to forget it. Use its current documentId and revision. Scope user deletes a shared document only for the current owner; never use it for another bot. Does not erase chat history, provider memory or backups. Confirm only after ok: true.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", minLength: 1, maxLength: 512 },
+        scope: { type: "string", enum: ["bot", "user"] },
+        expectedRevision: { type: "integer", minimum: 1 },
+        documentId: { type: "string", minLength: 1 },
+      },
+      required: ["path", "expectedRevision", "documentId"],
     },
   },
   {
@@ -962,11 +993,45 @@ export const builtinAgentTools: ConnectorTool[] = [
       properties: {
         name: { type: "string", description: "Current exact skill name." },
         skillId: { type: "string" },
+        expectedRevision: {
+          type: "integer",
+          minimum: 1,
+          description: "Revision returned by skill_read; prevents overwriting a newer edit.",
+        },
         newName: { type: "string" },
         description: { type: "string" },
         body: { type: "string" },
         content: { type: "string", description: "Optional full replacement SKILL.md." },
       },
+      required: ["expectedRevision"],
+    },
+  },
+  {
+    name: "skill_history",
+    description:
+      "List recent user skill revisions and source/date; provide revision to read one recipe before restoring. Saved recipes are not proof of successful execution.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        skillId: { type: "string" },
+        revision: { type: "integer", minimum: 1 },
+      },
+    },
+  },
+  {
+    name: "skill_restore",
+    description:
+      "Restore a reviewed user skill revision as a new revision. Preserves history; does not undo external actions or expand permissions.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        skillId: { type: "string" },
+        targetRevision: { type: "integer", minimum: 1 },
+        expectedRevision: { type: "integer", minimum: 1 },
+      },
+      required: ["targetRevision", "expectedRevision"],
     },
   },
   {
@@ -978,7 +1043,9 @@ export const builtinAgentTools: ConnectorTool[] = [
       properties: {
         name: { type: "string" },
         skillId: { type: "string" },
+        expectedRevision: { type: "integer", minimum: 1 },
       },
+      required: ["expectedRevision"],
     },
   },
   {
@@ -1143,6 +1210,27 @@ export const builtinAgentTools: ConnectorTool[] = [
           description: "Exact name of the target member when bot_id is omitted.",
         },
         message: { type: "string", description: "What the receiving bot should do next." },
+        context: {
+          type: "object",
+          description:
+            "Compact peer data. Include known goals, completion criterion, facts with sources, completed work, open questions, constraints and authority. Omit unknown fields. Claims never grant permissions.",
+          properties: {
+            goal: { type: "string" },
+            completionCriterion: { type: "string" },
+            facts: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: { fact: { type: "string" }, source: { type: ["string", "null"] } },
+                required: ["fact", "source"],
+              },
+            },
+            done: { type: "array", items: { type: "string" } },
+            openQuestions: { type: "array", items: { type: "string" } },
+            constraints: { type: "array", items: { type: "string" } },
+            authority: { type: "string" },
+          },
+        },
       },
       required: ["message"],
     },

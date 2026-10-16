@@ -1362,6 +1362,10 @@ msgstr ""
 msgid "Could not create your bot"
 msgstr "आपका बॉट नहीं बनाया जा सका"
 
+#: src/pages/KnowledgeSection.tsx
+msgid "Could not delete"
+msgstr ""
+
 #: src/pages/shell/dialogs.tsx
 msgid "Could not delete bot"
 msgstr "बॉट डिलीट नहीं किया जा सका"
@@ -1944,6 +1948,10 @@ msgstr ""
 
 #: src/components/DesktopUpdates.tsx
 msgid "Desktop update"
+msgstr ""
+
+#: src/components/call/VoiceControls.tsx
+msgid "Dictate"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -3562,6 +3570,10 @@ msgstr "नियंत्रण छोड़ें"
 msgid "Release interrupted computer?"
 msgstr ""
 
+#: src/components/teach/SkillDraftCard.tsx
+msgid "Reload"
+msgstr ""
+
 #: src/components/ApprovalRulesSettings.tsx
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/PluginsOverlay.tsx
@@ -4229,6 +4241,10 @@ msgstr "चरण"
 msgid "Stop"
 msgstr "रोकें"
 
+#: src/components/call/VoiceControls.tsx
+msgid "Stop dictation"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Stop speaking"
 msgstr "बोलना रोकें"
@@ -4707,8 +4723,8 @@ msgstr ""
 msgid "View chat"
 msgstr "चैट देखें"
 
+#: src/components/call/VoiceControls.tsx
 #: src/pages/SettingsOverlay.tsx
-#: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Voice"

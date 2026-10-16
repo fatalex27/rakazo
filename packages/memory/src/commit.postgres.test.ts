@@ -1,4 +1,5 @@
 import type { AdapterContext, MemoryCommitRequest } from "@rakazo/adapter-kit";
+import { MEMORY_REVISION_CONFLICT_ERROR } from "@rakazo/adapter-kit";
 import { createDb, type PrismaClient } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MarkdownMemoryStore } from "./index.js";
@@ -76,6 +77,96 @@ describePostgres("memory commits (PostgreSQL)", () => {
       include: { revisions: { orderBy: { revision: "asc" } } },
     });
   }
+  it.each(["bot", "user"] as const)(
+    "rejects remember/forget ABA after delete and recreation in %s memory",
+    async (scope) => {
+      const path = `aba-${scope}.md`,
+        botId = scope === "bot" ? "memory-commit-bot" : undefined;
+      const old = await store.commit(
+        { scope, botId, path, content: "old generation", expectedRevision: 0 },
+        context,
+      );
+      await store.forget(
+        { scope, botId, path, expectedRevision: 1, expectedDocumentId: old.id },
+        context,
+      );
+      const fresh = await store.commit(
+        { scope, botId, path, content: "new generation", expectedRevision: 0 },
+        context,
+      );
+      expect(fresh.id).not.toBe(old.id);
+      expect(fresh.revision).toBe(1);
+      const stale = { scope, botId, path, expectedRevision: 1, expectedDocumentId: old.id };
+      await expect(store.commit({ ...stale, content: "stale overwrite" }, context)).rejects.toThrow(
+        MEMORY_REVISION_CONFLICT_ERROR,
+      );
+      await expect(store.forget(stale, context)).rejects.toThrow(MEMORY_REVISION_CONFLICT_ERROR);
+      expect((await store.read({ scope, botId, path }, context)).documents[0]).toMatchObject({
+        id: fresh.id,
+        revision: 1,
+        content: "new generation",
+      });
+      const saved = await store.commit(
+        { ...stale, expectedDocumentId: fresh.id, content: "fresh overwrite" },
+        context,
+      );
+      expect(saved.revision).toBe(2);
+      await store.forget({ ...stale, expectedDocumentId: fresh.id, expectedRevision: 2 }, context);
+      expect((await store.read({ scope, botId, path }, context)).documents).toEqual([]);
+    },
+  );
+
+  it.each(["user", "bot"] as const)(
+    "forgets only an owned current %s revision, cascades history, and stays absent on fresh retrieval",
+    async (scope) => {
+      const path = `forget-${scope}.md`;
+      const botId = scope === "bot" ? "memory-commit-bot" : undefined;
+      const initial = await store.commit(
+        { ...request(path, `forgotten-${scope}`), scope, botId },
+        context,
+      );
+      const updated = await store.commit(
+        {
+          ...request(path, `corrected-forgotten-${scope}`),
+          scope,
+          botId,
+          expectedRevision: initial.revision,
+        },
+        context,
+      );
+      expect(await prisma.memoryRevision.count({ where: { documentId: initial.id } })).toBe(2);
+      const read = await store.read({ scope, botId, path }, context);
+      expect(read.documents[0]).toMatchObject({
+        revision: 2,
+        sourceRunId: `run-corrected-forgotten-${scope}`,
+        sourceThreadId: `thread-corrected-forgotten-${scope}`,
+      });
+      const removal = {
+        scope,
+        botId,
+        path,
+        expectedRevision: updated.revision,
+        expectedDocumentId: updated.id,
+      };
+      await expect(store.forget(removal, { ...context, userId: "foreign-owner" })).rejects.toThrow(
+        MEMORY_REVISION_CONFLICT_ERROR,
+      );
+      await expect(
+        store.forget({ ...removal, expectedRevision: initial.revision }, context),
+      ).rejects.toThrow(MEMORY_REVISION_CONFLICT_ERROR);
+      expect((await store.read({ scope, botId, path }, context)).documents[0]?.revision).toBe(2);
+      await store.forget(removal, context);
+      expect(await prisma.memoryDocument.count({ where: { id: initial.id } })).toBe(0);
+      expect(await prisma.memoryRevision.count({ where: { documentId: initial.id } })).toBe(0);
+      const reopened = new MarkdownMemoryStore(prisma);
+      expect(
+        await reopened.read({ scope, botId, path }, { ...context, runId: "fresh-run" }),
+      ).toEqual({ documents: [] });
+      expect(await reopened.search({ scope: "all", query: `forgotten-${scope}` }, context)).toEqual(
+        [],
+      );
+    },
+  );
 
   it.each(["user", "bot"] as const)(
     "retries overlapping %s saves with fresh revisions and matching history",

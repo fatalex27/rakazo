@@ -1362,6 +1362,10 @@ msgstr "Could not create space"
 msgid "Could not create your bot"
 msgstr "Could not create your bot"
 
+#: src/pages/KnowledgeSection.tsx
+msgid "Could not delete"
+msgstr "Could not delete"
+
 #: src/pages/shell/dialogs.tsx
 msgid "Could not delete bot"
 msgstr "Could not delete bot"
@@ -1945,6 +1949,10 @@ msgstr "Desktop app"
 #: src/components/DesktopUpdates.tsx
 msgid "Desktop update"
 msgstr "Desktop update"
+
+#: src/components/call/VoiceControls.tsx
+msgid "Dictate"
+msgstr "Dictate"
 
 #: src/components/integrations/IntegrationSetup.tsx
 msgid "Direct MCP"
@@ -3562,6 +3570,10 @@ msgstr "Release control"
 msgid "Release interrupted computer?"
 msgstr "Release interrupted computer?"
 
+#: src/components/teach/SkillDraftCard.tsx
+msgid "Reload"
+msgstr "Reload"
+
 #: src/components/ApprovalRulesSettings.tsx
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/PluginsOverlay.tsx
@@ -4229,6 +4241,10 @@ msgstr "Steps"
 msgid "Stop"
 msgstr "Stop"
 
+#: src/components/call/VoiceControls.tsx
+msgid "Stop dictation"
+msgstr "Stop dictation"
+
 #: src/pages/Shell.tsx
 msgid "Stop speaking"
 msgstr "Stop speaking"
@@ -4707,8 +4723,8 @@ msgstr "Version"
 msgid "View chat"
 msgstr "View chat"
 
+#: src/components/call/VoiceControls.tsx
 #: src/pages/SettingsOverlay.tsx
-#: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Voice"
@@ -4844,9 +4860,3 @@ msgstr "Your name"
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Your team of always-on agents<0/>that you can give real work to."
-
-msgid "Dictate"
-msgstr "Dictate"
-
-msgid "Stop dictation"
-msgstr "Stop dictation"

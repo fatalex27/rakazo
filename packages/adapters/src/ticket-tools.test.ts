@@ -145,6 +145,8 @@ describe("ticket tools", () => {
 
 function mutationDeps(ticketBoardEnabled = true) {
   let current = ticket();
+  // Model the ticket row lock; PostgreSQL concurrency needs an integration test.
+  let transactionTail = Promise.resolve();
   const changes = vi.fn(async (_change: { wakeAssignee: boolean }) => {});
   const tx = {
     board: { update: vi.fn(async () => ({ nextNumber: 2 })) },
@@ -169,6 +171,19 @@ function mutationDeps(ticketBoardEnabled = true) {
         ...data,
       })),
     },
+    bot: {
+      findFirst: vi.fn(async () => ({ id: "bot-2", userId: "user-1", thread: { id: "thread-2" } })),
+    },
+    task: {
+      create: vi.fn(async () => ({ id: "task-wake" })),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+    },
+    run: {
+      findMany: vi.fn(async () => []),
+      create: vi.fn(async (_value: { data: { clientNonce: string } }) => ({ id: "run-wake" })),
+      updateManyAndReturn: vi.fn(async () => []),
+    },
+    attempt: { updateMany: vi.fn(async () => ({ count: 1 })) },
     $queryRaw: vi.fn(async () => []),
   };
   const prisma = {
@@ -176,7 +191,23 @@ function mutationDeps(ticketBoardEnabled = true) {
     bot: { findFirst: vi.fn(async () => ({ id: "bot-2" })) },
     ticket: tx.ticket,
     ticketComment: { findMany: vi.fn(async () => []) },
-    $transaction: vi.fn(async (fn: (client: typeof tx) => Promise<unknown>) => fn(tx)),
+    $transaction: vi.fn(async (fn: (client: typeof tx) => Promise<unknown>) => {
+      const previous = transactionTail;
+      let release!: () => void;
+      transactionTail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      const before = current;
+      try {
+        return await fn(tx);
+      } catch (error) {
+        current = before;
+        throw error;
+      } finally {
+        release();
+      }
+    }),
   };
   return {
     deps: { prisma, onTicketChange: changes, ticketBoardEnabled } as never,
@@ -187,6 +218,61 @@ function mutationDeps(ticketBoardEnabled = true) {
 }
 
 describe("ticket mutations", () => {
+  it("serializes repeated assignments without creating more work", async () => {
+    const s = mutationDeps();
+    await Promise.all([
+      updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "bot-2" }),
+      updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "bot-2" }),
+    ]);
+    expect(s.tx.run.create).toHaveBeenCalledOnce();
+    expect(s.tx.run.updateManyAndReturn).toHaveBeenCalledOnce();
+    expect(s.tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      s.tx.ticket.findFirst.mock.invocationCallOrder[0]!,
+    );
+    await updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "bot-2" });
+    expect(s.tx.run.create).toHaveBeenCalledOnce();
+  });
+  it("persists the assignment run before committing, even without a notifier", async () => {
+    const s = mutationDeps();
+    await createTicket(
+      { ...(s.deps as Record<string, unknown>), onTicketChange: undefined } as never,
+      {
+        spaceId: "ws",
+        botId: "bot-1",
+        title: "Ship",
+        ownerBotId: "bot-2",
+      },
+    );
+    expect(s.tx.run.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          trigger: "tickets",
+          status: "queued",
+          clientNonce: expect.stringMatching(/^ticket-assignment:t1:/),
+        }),
+      }),
+    );
+  });
+  it("does not report a committed assignment when its run cannot be persisted", async () => {
+    const s = mutationDeps();
+    s.tx.run.create.mockRejectedValueOnce(new Error("storage unavailable"));
+    await expect(
+      updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "bot-2" }),
+    ).rejects.toThrow("storage unavailable");
+    expect(s.changes).not.toHaveBeenCalled();
+    await expect(getTicket(s.deps, { spaceId: "ws", ref: "RAK-1" })).resolves.toHaveProperty(
+      "ticket.assigneeBotId",
+      "bot-1",
+    );
+  });
+  it("uses different assignment episodes even when the clock does not advance", async () => {
+    const s = mutationDeps();
+    await updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "bot-2" });
+    await updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "bot-1" });
+    await updateTicket(s.deps, { spaceId: "ws", id: "t1", ownerBotId: "bot-2" });
+    const nonces = s.tx.run.create.mock.calls.map(([value]) => value.data.clientNonce);
+    expect(new Set(nonces).size).toBe(3);
+  });
   it("disables every tool without database access or wake-ups", async () => {
     const s = mutationDeps(false);
     await createTicket(s.deps, { spaceId: "ws", botId: "bot-1", title: "Ship" });

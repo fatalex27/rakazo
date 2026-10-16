@@ -34,17 +34,62 @@ function deps(
   const notify = vi.fn().mockResolvedValue(undefined);
   const messageFindUnique = vi
     .fn()
-    .mockImplementation(async (args: { where?: { threadId_clientNonce?: unknown } }) =>
-      args?.where?.threadId_clientNonce
-        ? (options.alreadyDelivered ?? null)
-        : { blocks: options.hopBlocks ?? [] },
+    .mockImplementation(
+      async (args: { where?: { threadId_clientNonce?: unknown; id?: string } }) =>
+        args?.where?.threadId_clientNonce
+          ? (options.alreadyDelivered ?? null)
+          : args?.where && "id" in args.where && args.where.id === "message-request"
+            ? {
+                id: "message-request",
+                blocks: [
+                  {
+                    kind: "bot_message_sent",
+                    toBotId: run.botId,
+                    text: "research this",
+                    intent: "request",
+                  },
+                ],
+                role: "bot",
+                botId: "bot-target",
+                runId: "parent",
+                threadId: "thread-target",
+                seq: 4,
+              }
+            : {
+                id: "message-source",
+                blocks: options.hopBlocks ?? [],
+                role: "user",
+                runId: run.id,
+                threadId: run.threadId,
+              },
     );
   const tx = {
     $queryRaw: vi.fn().mockResolvedValue([{ id: "thread" }]),
     run: {
       findFirst: vi
         .fn()
-        .mockResolvedValue(options.senderRunning === false ? null : { id: "run-1" }),
+        .mockImplementation(async (args: { where: { id: string; status?: unknown } }) =>
+          options.senderRunning === false
+            ? null
+            : args.where.status
+              ? { id: run.id }
+              : args.where.id === "parent"
+                ? {
+                    id: "parent",
+                    botId: "bot-target",
+                    threadId: "thread-target",
+                    trigger: "user",
+                    thread: { botId: "bot-target" },
+                  }
+                : {
+                    id: run.id,
+                    botId: run.botId,
+                    threadId: run.threadId,
+                    trigger: "bot_message",
+                    sourceMessageId: "message-source",
+                    thread: { botId: run.botId },
+                  },
+        ),
       findUnique: vi.fn().mockResolvedValue({ status: "running" }),
       create: vi.fn().mockResolvedValue({ id: "run-2" }),
     },
@@ -57,7 +102,10 @@ function deps(
       create: vi.fn().mockResolvedValue({ id: "message-1", seq: 1 }),
       update: vi.fn().mockResolvedValue({}),
     },
-    event: { create: vi.fn().mockResolvedValue({ seq: 7 }) },
+    event: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({ seq: 7 }),
+    },
     thread: { update: vi.fn().mockResolvedValue({}) },
   };
   let transactionAttempts = 0;
@@ -72,7 +120,7 @@ function deps(
         ),
     },
     message: { findUnique: messageFindUnique, findMany: vi.fn().mockResolvedValue([]) },
-    run: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    run: { findFirst: tx.run.findFirst, updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     $transaction: vi.fn(async (fn: (client: unknown) => unknown) => {
       transactionAttempts += 1;
       if (options.transactionConflictOnce && transactionAttempts === 1) {
@@ -681,6 +729,87 @@ describe("automatic outcome return", () => {
 
     expect(returned).toBe(true);
     expect(harness.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it.each([4, 5])(
+    "handles a terminal return without a wake when Stop covers its request (boundary %s)",
+    async (boundary) => {
+      const harness = deps({
+        hopBlocks: [
+          {
+            kind: "bot_message_received",
+            fromBotId: "bot-target",
+            text: "research this",
+            intent: "request",
+            returnToMessageId: "message-request",
+          },
+        ],
+      });
+      harness.tx.event.findFirst.mockResolvedValue({
+        payload: { notice: "explicit-stop", stopThroughMessageSeq: boundary },
+      } as never);
+      expect(
+        await returnBotMessageOutcome(
+          harness.deps,
+          { ...run, sourceMessageId: "message-source" },
+          sender,
+          "Saved final answer",
+        ),
+      ).toBe(true);
+      expect(harness.tx.run.create).not.toHaveBeenCalled();
+      expect(harness.tx.message.create).not.toHaveBeenCalled();
+      expect(harness.enqueue).not.toHaveBeenCalled();
+      expect(harness.deps.prisma.run.updateMany).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("allows an explicit new request whose sequence follows Stop", async () => {
+    const harness = deps({
+      hopBlocks: [
+        {
+          kind: "bot_message_received",
+          fromBotId: "bot-target",
+          text: "research this",
+          intent: "request",
+          returnToMessageId: "message-request",
+        },
+      ],
+    });
+    harness.tx.event.findFirst.mockResolvedValue({
+      payload: { notice: "explicit-stop", stopThroughMessageSeq: 3 },
+    } as never);
+    expect(
+      await returnBotMessageOutcome(
+        harness.deps,
+        { ...run, sourceMessageId: "message-source" },
+        sender,
+        "New final answer",
+      ),
+    ).toBe(true);
+    expect(harness.enqueue).toHaveBeenCalledOnce();
+  });
+
+  it("handles malformed terminal ancestry without creating a wake", async () => {
+    const harness = deps({
+      hopBlocks: [
+        {
+          kind: "bot_message_received",
+          fromBotId: "bot-target",
+          text: "research this",
+          intent: "request",
+        },
+      ],
+    });
+    expect(
+      await returnBotMessageOutcome(
+        harness.deps,
+        { ...run, sourceMessageId: "message-source" },
+        sender,
+        "Saved answer",
+      ),
+    ).toBe(true);
+    expect(harness.enqueue).not.toHaveBeenCalled();
+    expect(harness.deps.prisma.run.updateMany).toHaveBeenCalledOnce();
   });
 
   it("skips the automatic return when a result was already sent", async () => {

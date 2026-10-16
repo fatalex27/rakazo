@@ -43,6 +43,7 @@ import {
   resolveSendAttachments,
 } from "./artifacts.js";
 import { resolveBusyBotName, toComputerStatus } from "./computer-status.js";
+import { withLockedBotRequestRuns } from "./linked-bot-runs.js";
 import { withSerializableRetry } from "./serializable-retry.js";
 import { loadMessagePage } from "./thread-message-pages.js";
 
@@ -1096,82 +1097,124 @@ export async function stopThreadRuns(
   actor: Actor,
   target: ThreadTarget,
 ) {
-  const { runIds, computers, leases, eventSeq } = await deps.prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM threads WHERE id = ${target.threadId} FOR UPDATE`;
-    const cancelled = await tx.run.updateManyAndReturn({
-      where: {
-        threadId: target.threadId,
-        status: { in: [...ACTIVE_RUN_STATUSES] },
-      },
-      data: { status: "cancelled", completedAt: new Date() },
-      select: { id: true, botId: true },
-    });
-    const ids = cancelled.map((run) => run.id);
-    await tx.steeringMessage.deleteMany({
-      where: {
-        botId: { in: target.kind === "bot" ? [target.botId] : target.memberBotIds },
-        message: { threadId: target.threadId },
-      },
-    });
-    // Snapshot teardown coordinates before commit. Once cancellation becomes
-    // visible, a worker can release its lease / execution columns immediately; a
-    // later lookup would then miss the sandbox work this request must stop.
-    // Team ownership lives on ComputerExecutionLease; Computer.executionRunId is
-    // only a legacy secondary path and is not written by current acquisition.
-    const leases = ids.length
-      ? await tx.computerExecutionLease.findMany({
-          where: { runId: { in: ids } },
-          select: { computerId: true, botId: true, runId: true, fence: true },
-        })
-      : [];
-    const leaseComputerIds = [...new Set(leases.map((lease) => lease.computerId))];
-    const computers = ids.length
-      ? await tx.computer.findMany({
-          where:
-            leaseComputerIds.length > 0
-              ? {
-                  OR: [{ id: { in: leaseComputerIds } }, { executionRunId: { in: ids } }],
-                }
-              : { executionRunId: { in: ids } },
-          select: {
-            id: true,
-            homeKey: true,
-            kind: true,
-            providerRef: true,
-            executionBotId: true,
-            executionRunId: true,
-          },
-        })
-      : [];
-    // One terminal event per cancelled run, in the same commit as the status
-    // flip and the progress purge below. Other clients learn the run ended, and
-    // the fresh seq keeps max(seq) above every deleted progress row so a client
-    // whose cursor pointed at one never discards later refreshes as stale.
-    let eventSeq: number | null = null;
-    for (const run of cancelled) {
-      const event = await appendEventInTransaction(tx, {
-        spaceId: actor.spaceId,
-        threadId: target.threadId,
-        botId: run.botId,
-        type: "run.cancelled",
-        runId: run.id,
-        payload: {},
-      });
-      eventSeq = event.seq;
-    }
-    if (ids.length) {
-      await tx.event.deleteMany({
+  const { runIds, computers, leases, notifications } = await withLockedBotRequestRuns(
+    deps.prisma,
+    actor,
+    target.threadId,
+    async (tx, linkedRuns) => {
+      const now = new Date();
+      const cancelled = await tx.run.updateManyAndReturn({
         where: {
-          type: "thread.progress",
-          runId: { in: ids },
+          spaceId: actor.spaceId,
+          userId: actor.userId,
+          OR: [{ threadId: target.threadId }, { id: { in: linkedRuns.map((run) => run.id) } }],
+          status: { in: [...ACTIVE_RUN_STATUSES] },
+        },
+        data: { status: "cancelled", completedAt: now },
+        select: { id: true, botId: true, threadId: true, taskId: true },
+      });
+      const ids = cancelled.map((run) => run.id);
+      if (ids.length) {
+        await tx.attempt.updateMany({
+          where: {
+            runId: { in: ids },
+            status: { in: ["running", "waiting_input", "waiting_takeover"] },
+          },
+          data: { status: "cancelled", finishedAt: now },
+        });
+        await tx.task.updateMany({
+          where: { id: { in: cancelled.map((run) => run.taskId) } },
+          data: { status: "cancelled" },
+        });
+      }
+      await tx.steeringMessage.deleteMany({
+        where: {
+          botId: { in: target.kind === "bot" ? [target.botId] : target.memberBotIds },
+          message: { threadId: target.threadId },
         },
       });
-    }
-    return { runIds: ids, computers, leases, eventSeq };
-  });
-  if (eventSeq !== null) {
+      // Snapshot teardown coordinates before commit. Once cancellation becomes
+      // visible, a worker can release its lease / execution columns immediately; a
+      // later lookup would then miss the sandbox work this request must stop.
+      // Team ownership lives on ComputerExecutionLease; Computer.executionRunId is
+      // only a legacy secondary path and is not written by current acquisition.
+      const leases = ids.length
+        ? await tx.computerExecutionLease.findMany({
+            where: { runId: { in: ids } },
+            select: { computerId: true, botId: true, runId: true, fence: true },
+          })
+        : [];
+      const leaseComputerIds = [...new Set(leases.map((lease) => lease.computerId))];
+      const computers = ids.length
+        ? await tx.computer.findMany({
+            where:
+              leaseComputerIds.length > 0
+                ? {
+                    OR: [{ id: { in: leaseComputerIds } }, { executionRunId: { in: ids } }],
+                  }
+                : { executionRunId: { in: ids } },
+            select: {
+              id: true,
+              homeKey: true,
+              kind: true,
+              providerRef: true,
+              executionBotId: true,
+              executionRunId: true,
+            },
+          })
+        : [];
+      // One terminal event per cancelled run, in the same commit as the status
+      // flip and the progress purge below. Other clients learn the run ended, and
+      // the fresh seq keeps max(seq) above every deleted progress row so a client
+      // whose cursor pointed at one never discards later refreshes as stale.
+      const notificationSeqByThread = new Map<string, number>();
+      const lastMessage = await tx.message.findFirst({
+        where: { threadId: target.threadId },
+        orderBy: { seq: "desc" },
+        select: { seq: true },
+      });
+      const markerBotId =
+        target.kind === "bot" ? target.botId : (target.memberBotIds[0] ?? cancelled[0]?.botId);
+      if (markerBotId) {
+        const stopMarker = await appendEventInTransaction(tx, {
+          spaceId: actor.spaceId,
+          threadId: target.threadId,
+          botId: markerBotId,
+          type: "thread.meta",
+          payload: { notice: "explicit-stop", stopThroughMessageSeq: lastMessage?.seq ?? -1 },
+        });
+        notificationSeqByThread.set(target.threadId, stopMarker.seq);
+      }
+      for (const run of cancelled) {
+        const event = await appendEventInTransaction(tx, {
+          spaceId: actor.spaceId,
+          threadId: run.threadId,
+          botId: run.botId,
+          type: "run.cancelled",
+          runId: run.id,
+          payload: {},
+        });
+        notificationSeqByThread.set(run.threadId, event.seq);
+      }
+      if (ids.length) {
+        await tx.event.deleteMany({
+          where: {
+            type: "thread.progress",
+            runId: { in: ids },
+          },
+        });
+      }
+      return {
+        runIds: ids,
+        computers,
+        leases,
+        notifications: [...notificationSeqByThread].map(([threadId, seq]) => ({ threadId, seq })),
+      };
+    },
+  );
+  for (const notice of notifications) {
     // The events are durable; subscribers refetch from their persisted cursor.
-    await deps.events.notify(target.threadId, eventSeq).catch((error) => {
+    await deps.events.notify(notice.threadId, notice.seq).catch((error) => {
       getLogger().error("thread stop realtime notification", error);
     });
   }

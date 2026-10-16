@@ -79,7 +79,7 @@ interface ToolCallBudget {
   limit: number;
   inFlight: number;
 }
-// Optional fuse is process-local. continueRun on another worker starts at zero.
+// Backend runs reserve durable slots; standalone runtimes retain a local fuse.
 const toolCallBudgetsByRun = new Map<string, ToolCallBudget>();
 // Built on first use, not at module load: entry points call loadRootEnv() after
 // their imports, and ESM hoists those imports, so module-level env reads here
@@ -1049,6 +1049,8 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
         return {
           content: String(raw.content ?? ""),
           path: String(raw.path ?? "MEMORY.md"),
+          expectedRevision: raw.expectedRevision,
+          documentId: raw.documentId,
         };
       }
       if (tool.name === "request_takeover") {
@@ -1142,11 +1144,12 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
     execute: async (toolCallId, params): Promise<AgentToolResult<unknown>> => {
       host.signal.throwIfAborted();
       const args = (params ?? {}) as Record<string, unknown>;
-      const rawCallId =
-        toolCallId || `${host.request.runId}:${tool.name}:${host.toolCallSeq.value++}`;
+      const invocation = host.toolCallSeq.value++;
+      const rawCallId = toolCallId || `${host.request.runId}:${tool.name}:${invocation}`;
       // Backend idempotency includes the agent namespace; Pi wire IDs remain untouched.
       const executionId = JSON.stringify(["pi-tool", host.agentNamespace ?? "main", rawCallId]);
-      if (!beginToolCall(host)) {
+      const reservationKey = JSON.stringify([host.agentNamespace ?? "main", invocation]);
+      if (!(await beginToolCall(host, tool.name, executionId, reservationKey, args))) {
         return {
           content: [{ type: "text", text: "Skipped: tool-call limit reached." }],
           details: { skipped: true },
@@ -1675,7 +1678,12 @@ function builtinParameters(tool: ConnectorTool) {
     });
   }
   if (tool.name === "remember") {
-    return Type.Object({ content: Type.String(), path: Type.String() });
+    return Type.Object({
+      content: Type.String(),
+      path: Type.String(),
+      expectedRevision: Type.Integer({ minimum: 0 }),
+      documentId: Type.Optional(Type.String()),
+    });
   }
   if (tool.name === "shell") {
     return Type.Object({
@@ -2210,8 +2218,39 @@ function maybeAbortToolCallBudget(host: ToolHost) {
   }
 }
 
-function beginToolCall(host: ToolHost): boolean {
+async function beginToolCall(
+  host: ToolHost,
+  name: string,
+  executionId: string,
+  reservationKey: string,
+  args: Record<string, unknown>,
+): Promise<boolean> {
   const budget = host.toolCallBudget;
+  if (host.request.reserveToolCall) {
+    const reservation = await host.request.reserveToolCall({
+      name,
+      executionId,
+      reservationKey,
+      args,
+      limit: budget.limit,
+    });
+    budget.count = reservation.count;
+    if (reservation.allowed) {
+      budget.inFlight += 1;
+      return true;
+    }
+    if (reservation.reason === "lease")
+      throw new Error("Run ownership was lost before tool dispatch.");
+    if (!budget.exceeded) {
+      budget.exceeded = true;
+      host.queue.push({
+        type: "progress",
+        text: `Stopped: more than ${budget.limit} tool calls in one turn.`,
+      });
+    }
+    maybeAbortToolCallBudget(host);
+    return false;
+  }
   if (budget.limit <= 0) {
     budget.count += 1;
     return true;

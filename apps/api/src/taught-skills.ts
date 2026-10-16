@@ -44,11 +44,16 @@ import {
   type createRepos,
   expireComputerExecutionLeases,
   IsolationError,
+  listSkillRevisions,
   type PrismaClient,
+  SkillRevisionConflict,
+  SkillRevisionRejected,
   type ThreadEvents,
+  writeSkillRevision,
 } from "@rakazo/db";
 
 type TaughtSkillRow = {
+  revision?: number;
   id: string;
   spaceId: string;
   botId: string;
@@ -269,6 +274,7 @@ async function updateSkillDraftMessage(
     nextBlocks[index] = {
       kind: "skill_draft",
       skillId: skill.id,
+      revision: skill.revision ?? 1,
       name: input.name ?? existing.name,
       goal: skill.goal,
       playbook,
@@ -328,7 +334,39 @@ export async function stopTeachingSession(
 }
 
 export function createTaughtSkillsService(deps: TaughtSkillsDeps) {
+  async function write(actor: Actor, input: Parameters<typeof writeSkillRevision>[3]) {
+    try {
+      return await writeSkillRevision(deps.prisma, actor, "taught", input);
+    } catch (error) {
+      if (error instanceof SkillRevisionConflict)
+        throw new ORPCError("CONFLICT", { message: error.message });
+      if (error instanceof SkillRevisionRejected)
+        throw new ORPCError("BAD_REQUEST", { message: error.message });
+      throw error;
+    }
+  }
   return {
+    async history(actor: Actor, skillId: string, revision?: number) {
+      try {
+        return await listSkillRevisions(deps.prisma, actor, "taught", skillId, revision);
+      } catch (error) {
+        if (error instanceof SkillRevisionRejected)
+          throw new ORPCError("BAD_REQUEST", { message: error.message });
+        throw error;
+      }
+    },
+    async restore(
+      actor: Actor,
+      input: { skillId: string; targetRevision: number; expectedRevision: number },
+    ) {
+      const row = await write(actor, input);
+      await updateSkillDraftMessage(deps, actor, row, {
+        name: row.name,
+        playbook: parsePlaybook(row.playbook),
+        status: row.status === "saved" ? "saved" : "draft",
+      });
+      return mapTaughtSkill(row);
+    },
     async list(actor: Actor, botId: string): Promise<TaughtSkill[]> {
       const rows = await deps.prisma.taughtSkill.findMany({
         where: { spaceId: actor.spaceId, botId, userId: actor.userId },
@@ -450,14 +488,15 @@ export function createTaughtSkillsService(deps: TaughtSkillsDeps) {
     async updateDraft(
       actor: Actor,
       skillId: string,
-      input: { name?: string; playbook: SkillPlaybook },
+      input: { name?: string; playbook: SkillPlaybook; expectedRevision: number },
     ): Promise<TaughtSkill> {
       const skill = await getOwnedSkill(deps, actor, skillId);
       if (skill.status !== "draft" && skill.status !== "saved") {
         throw new ORPCError("BAD_REQUEST", { message: "Skill is not editable yet" });
       }
-      const row = await deps.prisma.taughtSkill.update({
-        where: { id: skill.id },
+      const row = await write(actor, {
+        skillId: skill.id,
+        expectedRevision: input.expectedRevision,
         data: {
           name: input.name ?? skill.name,
           playbook: input.playbook as never,
@@ -472,16 +511,23 @@ export function createTaughtSkillsService(deps: TaughtSkillsDeps) {
       return mapTaughtSkill(row);
     },
 
-    async save(actor: Actor, skillId: string, name?: string): Promise<TaughtSkill> {
+    async save(
+      actor: Actor,
+      skillId: string,
+      name: string | undefined,
+      expectedRevision: number,
+    ): Promise<TaughtSkill> {
       const skill = await getOwnedSkill(deps, actor, skillId);
       if (skill.status !== "draft" && skill.status !== "saved") {
         throw new ORPCError("BAD_REQUEST", { message: "Finish recording before saving" });
       }
-      const row = await deps.prisma.taughtSkill.update({
-        where: { id: skill.id },
+      const row = await write(actor, {
+        skillId: skill.id,
+        expectedRevision,
         data: {
           status: "saved",
           name: name ?? (skill.name || skill.goal.slice(0, 80)),
+          playbook: skill.playbook as never,
         },
       });
       const bot = await deps.prisma.bot.findUnique({

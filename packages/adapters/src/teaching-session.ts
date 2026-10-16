@@ -28,6 +28,7 @@ import { scheduleComputerSleep } from "./computer-idle.js";
 import { toComputerRef } from "./computer-support.js";
 
 export type TaughtSkillRow = {
+  revision?: number;
   id: string;
   spaceId: string;
   botId: string;
@@ -97,6 +98,7 @@ export function parsePlaybook(value: unknown): SkillPlaybook {
 
 export function mapTaughtSkill(row: TaughtSkillRow): TaughtSkill {
   return {
+    revision: row.revision ?? 1,
     id: row.id,
     botId: row.botId,
     name: row.name,
@@ -338,6 +340,7 @@ function skillDraftBlocks(skill: TaughtSkillRow): MessageBlock[] {
     {
       kind: "skill_draft",
       skillId: skill.id,
+      revision: skill.revision ?? 1,
       name: skill.name || skill.goal.slice(0, 80),
       goal: skill.goal,
       playbook: parsePlaybook(skill.playbook),

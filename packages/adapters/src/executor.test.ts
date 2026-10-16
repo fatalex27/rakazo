@@ -1433,6 +1433,8 @@ describe("createRunExecutor", () => {
     }).map((tool) => tool.name);
     expect(tools).not.toContain("recall_memory");
     expect(tools).not.toContain("remember");
+    expect(tools).not.toContain("read_memory_document");
+    expect(tools).not.toContain("forget_memory_document");
     expect(tools).not.toContain("save_memory");
     expect(tools).not.toContain("save_shared_memory");
     expect(tools).not.toContain("task_catalog");

@@ -308,6 +308,16 @@ function fixture({
 }
 
 describe("disabled builtins", () => {
+  it.each(["read_memory_document", "forget_memory_document"])(
+    "refuses disabled native memory tool %s before effects",
+    async (name) => {
+      const f = fixture({ name, builtin: true, disabledBuiltinTools: [name] });
+      f.setCalls([{ args: { path: "MEMORY.md", expectedRevision: 1 }, executionId: "call-1" }]);
+      await f.run();
+      expect(f.results).toEqual([{ error: "This tool is disabled for this bot." }]);
+      expect(f.effects).toEqual([]);
+    },
+  );
   it("refuses a direct call before any effect or memory write", async () => {
     const f = fixture({
       name: "save_shared_memory",
@@ -326,6 +336,19 @@ describe("disabled builtins", () => {
 describe("connector read-only metadata and approval enforcement", () => {
   beforeEach(() => {
     reviewMock.mockReset();
+  });
+  it("honors a require-approval rule for native forgetting before reaching the memory store", async () => {
+    const f = fixture({
+      name: "forget_memory_document",
+      builtin: true,
+      rules: [
+        { effect: "require_approval", matchKind: "tool", matchValue: "forget_memory_document" },
+      ],
+    });
+    f.setCalls([{ args: { path: "MEMORY.md", expectedRevision: 1 }, executionId: "forget-1" }]);
+    await f.run();
+    expect(f.pauseRunForInput).toHaveBeenCalledOnce();
+    expect(isApprovalPausedResult(f.results[0])).toBe(true);
   });
 
   it.each(["shell", "write_file"])(

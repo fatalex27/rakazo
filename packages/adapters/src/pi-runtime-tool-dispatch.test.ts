@@ -30,6 +30,8 @@ const fakeAgentState = vi.hoisted(() => ({
   narration: "I will check the destination first.",
   finalDelta: undefined as string | undefined,
   abortCount: 0,
+  reuseProviderId: false,
+  sameArgs: false,
   tools: [] as Array<{
     name: string;
     prepareArguments?: (args: unknown) => Record<string, unknown>;
@@ -234,14 +236,17 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
         const shell = this.tools.find((tool) => tool.name === "shell");
         if (!shell) throw new Error("shell was not exposed");
         for (let index = 0; index < 100; index += 1) {
-          const args = { command: `echo ${index}` };
+          const args = { command: `echo ${fakeAgentState.sameArgs ? 0 : index}` };
           this.emit({
             type: "tool_execution_start",
             toolName: shell.name,
             args,
           });
           if (this.aborted) break;
-          await shell.execute(`shell-${index}`, args);
+          await shell.execute(
+            fakeAgentState.reuseProviderId ? "shell-reused" : `shell-${index}`,
+            args,
+          );
         }
         return;
       }
@@ -1545,6 +1550,145 @@ describe("Pi connector tool dispatch", () => {
         text: expect.stringContaining("tool calls in one turn"),
       }),
     );
+  });
+
+  it.each([true, false])(
+    "charges new invocations with reused provider ids (same args: %s)",
+    async (sameArgs) => {
+      process.env.MAX_TOOL_CALLS_PER_TURN = "2";
+      fakeAgentState.mode = "parent-limit";
+      fakeAgentState.reuseProviderId = true;
+      fakeAgentState.sameArgs = sameArgs;
+      const keys = new Set<string>();
+      const executeTool = vi.fn(async () => ({ ok: true }));
+      const reserveToolCall = vi.fn(async ({ reservationKey }: { reservationKey: string }) => {
+        if (keys.size >= 2) return { allowed: false, count: 2, reason: "limit" as const };
+        keys.add(reservationKey);
+        return { allowed: true, count: keys.size };
+      });
+      try {
+        for await (const _event of new PiAgentRuntime().run(
+          {
+            botId: "b",
+            threadId: "t",
+            runId: `reuse-${sameArgs}`,
+            prompt: "loop",
+            instructions: "Use shell",
+            history: [],
+            tools: [shellTool],
+            model: { provider: "test", id: "dispatch-test-model" },
+            executeTool,
+            reserveToolCall,
+          },
+          {
+            operationId: "reuse",
+            traceId: "reuse",
+            spaceId: "w",
+            userId: "u",
+            signal: new AbortController().signal,
+          },
+        )) {
+        }
+        expect(executeTool).toHaveBeenCalledTimes(2);
+        expect(keys.size).toBe(2);
+      } finally {
+        fakeAgentState.reuseProviderId = false;
+        fakeAgentState.sameArgs = false;
+      }
+    },
+  );
+
+  it.each(["parent-limit", "subagent-limit"] as const)(
+    "awaits durable capacity across fresh runtime instances with %s",
+    async (mode) => {
+      process.env.MAX_TOOL_CALLS_PER_TURN = "3";
+      fakeAgentState.mode = mode;
+      let persisted = 0;
+      const reserveToolCall = vi.fn(async () => {
+        await Promise.resolve();
+        if (persisted >= 3) return { allowed: false, count: persisted, reason: "limit" as const };
+        return { allowed: true, count: ++persisted };
+      });
+      const executeTool = vi.fn(async () => {
+        expect(persisted).toBeGreaterThan(0);
+        return { ok: true };
+      });
+      const request = {
+        botId: "b",
+        threadId: "t",
+        runId: `durable-${mode}`,
+        prompt: "work",
+        instructions: "Use tools",
+        history: [],
+        tools:
+          mode === "subagent-limit"
+            ? [
+                {
+                  name: "run_subagent",
+                  description: "Delegate",
+                  inputSchema: { type: "object", properties: {} },
+                },
+                shellTool,
+              ]
+            : [{ ...shellTool, readOnly: true }],
+        model: { provider: "test", id: "dispatch-test-model" },
+        executeTool,
+        reserveToolCall,
+      };
+      const context = {
+        operationId: "durable",
+        traceId: "durable",
+        spaceId: "w",
+        userId: "u",
+        signal: new AbortController().signal,
+      };
+      for await (const _event of new PiAgentRuntime().run(request, context)) {
+      }
+      const dispatched = executeTool.mock.calls.length;
+      expect(dispatched).toBe(mode === "subagent-limit" ? 2 : 3);
+      for await (const _event of new PiAgentRuntime().run(request, context)) {
+      }
+      expect(executeTool).toHaveBeenCalledTimes(dispatched);
+      expect(persisted).toBe(3);
+    },
+  );
+
+  it("reserves local ask_user tools before asking", async () => {
+    process.env.MAX_TOOL_CALLS_PER_TURN = "2";
+    fakeAgentState.mode = "ask-pause";
+    const reserveToolCall = vi.fn(async ({ name }: { name: string }) => ({
+      allowed: name !== "ask_user",
+      count: 2,
+      reason: "limit" as const,
+    }));
+    const events: Array<{ type: string }> = [];
+    for await (const event of new PiAgentRuntime().run(
+      {
+        botId: "b",
+        threadId: "t",
+        runId: "denied-ask",
+        prompt: "ask",
+        instructions: "Ask",
+        history: [],
+        tools: [
+          shellTool,
+          { name: "ask_user", description: "Ask", inputSchema: { type: "object", properties: {} } },
+        ],
+        model: { provider: "test", id: "dispatch-test-model" },
+        reserveToolCall,
+        executeTool: async () => ({ ok: true }),
+      },
+      {
+        operationId: "ask",
+        traceId: "ask",
+        spaceId: "w",
+        userId: "u",
+        signal: new AbortController().signal,
+      },
+    ))
+      events.push(event);
+    expect(reserveToolCall).toHaveBeenCalledWith(expect.objectContaining({ name: "ask_user" }));
+    expect(events.some((event) => event.type === "ask")).toBe(false);
   });
 
   it("soft-stops with a final message when MAX_TOOL_CALLS_PER_TURN is set", async () => {

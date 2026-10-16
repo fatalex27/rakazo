@@ -126,7 +126,11 @@ function MemoryDocumentList({
     setBusy(true);
     setError(null);
     try {
-      const updated = await rpc.memory.update({ documentId: doc.id, content: draft });
+      const updated = await rpc.memory.update({
+        documentId: doc.id,
+        content: draft,
+        expectedRevision: doc.revision,
+      });
       setDocs((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
       setOpenId(null);
     } catch {
@@ -150,6 +154,23 @@ function MemoryDocumentList({
       downloadArtifactBytes(exportFilename, "text/markdown", new TextEncoder().encode(markdown));
     } catch {
       setError(t`Could not load`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function forget(doc: MemoryDocument) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await rpc.memory.remove({ documentId: doc.id, expectedRevision: doc.revision });
+      const fresh = await loadRef.current();
+      generation.current += 1;
+      setDocs(fresh);
+      setOpenId(null);
+    } catch {
+      setError(t`Could not delete`);
     } finally {
       setBusy(false);
     }
@@ -194,6 +215,15 @@ function MemoryDocumentList({
                 dir="auto"
               />
               <div className="mt-2 flex gap-2">
+                <Button
+                  variant="ghost"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void forget(doc)}
+                  className="rounded-lg px-3 py-1.5 text-[13px] text-destructive"
+                >
+                  <Trans>Delete</Trans>
+                </Button>
                 <Button
                   variant="ghost"
                   type="button"
@@ -324,7 +354,11 @@ function AgentSkills({
       if (creating) {
         await rpc.agentSkills.create({ content: draft });
       } else if (open) {
-        await rpc.agentSkills.update({ skillId: open.id, content: draft });
+        await rpc.agentSkills.update({
+          skillId: open.id,
+          content: draft,
+          expectedRevision: open.revision ?? 1,
+        });
       }
       setOpen(null);
       setCreating(false);
@@ -351,7 +385,7 @@ function AgentSkills({
     setBusy(true);
     setError(null);
     try {
-      await rpc.agentSkills.remove({ skillId });
+      await rpc.agentSkills.remove({ skillId, expectedRevision: skill.revision ?? 1 });
       if (open?.id === skillId) {
         setOpen(null);
         setConfirmingDelete(false);

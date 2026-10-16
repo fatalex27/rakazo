@@ -547,11 +547,17 @@ describeJourneys("required product journeys", () => {
       bot.id,
       "write a file in your home called notes/result.txt that says kept-after-clear",
     );
-    const memories = await rpc<Array<{ id: string }>>(app, cookie, "memory/list", {
-      botId: bot.id,
-    });
+    const memories = await rpc<Array<{ id: string; revision: number }>>(
+      app,
+      cookie,
+      "memory/list",
+      {
+        botId: bot.id,
+      },
+    );
     await rpc(app, cookie, "memory/update", {
       documentId: memories[0]!.id,
+      expectedRevision: memories[0]!.revision,
       content: "# Keeper\n\nRemember this after clearing.",
     });
     const routine = await rpc<{ id: string }>(app, cookie, "routines/create", {
@@ -1404,11 +1410,21 @@ describeJourneys("required product journeys", () => {
     );
 
     const [events, messages] = await Promise.all([
-      prisma.event.findMany({ where: { threadId: thread.id }, orderBy: { seq: "asc" } }),
-      prisma.message.findMany({ where: { threadId: thread.id }, orderBy: { seq: "asc" } }),
+      prisma.event.findMany({
+        where: { threadId: thread.id, seq: { gte: thread.nextEventSeq } },
+        orderBy: { seq: "asc" },
+      }),
+      prisma.message.findMany({
+        where: { threadId: thread.id, seq: { gte: thread.nextMessageSeq } },
+        orderBy: { seq: "asc" },
+      }),
     ]);
-    expect(events.map((row) => row.seq)).toEqual(Array.from({ length: 40 }, (_, i) => i));
-    expect(messages.map((row) => row.seq)).toEqual(Array.from({ length: 40 }, (_, i) => i));
+    expect(events.map((row) => row.seq)).toEqual(
+      Array.from({ length: 40 }, (_, i) => thread.nextEventSeq + i),
+    );
+    expect(messages.map((row) => row.seq)).toEqual(
+      Array.from({ length: 40 }, (_, i) => thread.nextMessageSeq + i),
+    );
   });
 
   it("6: fake, managed-sandbox emulator, and desktop executor run the same graphical task", async () => {
@@ -2480,6 +2496,7 @@ describeJourneys("required product journeys", () => {
     });
     expect(blocked.status).toBeGreaterThanOrEqual(400);
     const stopped = await rpc<{
+      revision: number;
       status: string;
       playbook: { steps: string[] };
       recording: { events: Array<{ kind: string }>; snapshots: Array<{ summary: string }> };
@@ -2496,16 +2513,25 @@ describeJourneys("required product journeys", () => {
     );
     expect(computerAfterStop.controlHolder).toBe("bot");
     expect(computerAfterStop.controlBotId).toBeNull();
-    await rpc(app, cookie, "skills/updateDraft", {
+    const updated = await rpc<{ revision: number }>(app, cookie, "skills/updateDraft", {
       skillId: skill.id,
+      expectedRevision: stopped.revision,
       name: "Export weekly CRM list",
       playbook: stopped.playbook,
     });
-    const saved = await rpc<{ status: string; name: string }>(app, cookie, "skills/save", {
-      skillId: skill.id,
-      name: "Export weekly CRM list",
-    });
+    const saved = await rpc<{ status: string; name: string; revision: number }>(
+      app,
+      cookie,
+      "skills/save",
+      {
+        skillId: skill.id,
+        expectedRevision: updated.revision,
+        name: "Export weekly CRM list",
+      },
+    );
     expect(saved.status).toBe("saved");
+    expect(updated.revision).toBeGreaterThan(stopped.revision);
+    expect(saved.revision).toBeGreaterThan(updated.revision);
     const listed = await rpc<Array<{ id: string; name: string }>>(app, cookie, "skills/list", {
       botId: bot.id,
     });

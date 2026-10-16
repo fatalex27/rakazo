@@ -284,9 +284,12 @@ export async function runTrial(
         goal: "Dispatch label",
       });
       await rpc(app, cookie, "computer/input", { botId, kind: "key", payload: { key: "x" } });
-      await rpc(app, cookie, "skills/stop", { skillId: skill.id });
-      await rpc(app, cookie, "skills/updateDraft", {
+      const stopped = await rpc<{ revision: number }>(app, cookie, "skills/stop", {
         skillId: skill.id,
+      });
+      const updated = await rpc<{ revision: number }>(app, cookie, "skills/updateDraft", {
+        skillId: skill.id,
+        expectedRevision: stopped.revision,
         name: "Dispatch label",
         playbook: {
           whenToUse: "When asked to run Dispatch label for a city and item count.",
@@ -301,7 +304,11 @@ export async function runTrial(
           failureHandling: "Report a missing input; do not invent it.",
         },
       });
-      await rpc(app, cookie, "skills/save", { skillId: skill.id, name: "Dispatch label" });
+      await rpc(app, cookie, "skills/save", {
+        skillId: skill.id,
+        name: "Dispatch label",
+        expectedRevision: updated.revision,
+      });
     }
     phase = "product";
     let lastText = "";

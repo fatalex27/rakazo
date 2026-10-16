@@ -16,6 +16,7 @@ import {
   withTransactionRetry,
 } from "@rakazo/db";
 import { getLogger } from "@rakazo/logging";
+import { botRequestBoundaries, crossesExplicitStop } from "./bot-message-stop-boundary.js";
 import type { ExecutorDeps } from "./executor.js";
 
 /**
@@ -80,7 +81,7 @@ export async function messageBot(
     intent?: BotMessageIntent;
     deliveryKey?: string;
   },
-  options?: { allowTerminalSource?: boolean; forceUnread?: boolean },
+  options?: { allowTerminalSource?: boolean; forceUnread?: boolean; automaticOutcome?: boolean },
 ) {
   const message = String(input.message ?? "").trim();
   if (!message) return { ok: false as const, error: "message is required" };
@@ -123,6 +124,12 @@ export async function messageBot(
   }
 
   const targetThreadId = target.thread.id;
+  const boundaries = options?.automaticOutcome
+    ? await botRequestBoundaries(deps.prisma, run, run.id)
+    : undefined;
+  const lockedThreads = [
+    ...new Set([run.threadId, targetThreadId, ...(boundaries ?? []).map((item) => item.threadId)]),
+  ].sort();
 
   // A tool call can be re-executed after a lease expiry, so a delivery has to be
   // replayable: without this the recipient is messaged twice and woken twice.
@@ -160,11 +167,12 @@ export async function messageBot(
     | {
         ok: true;
         replayed: true;
+        suppressed?: boolean;
       };
   try {
     committed = await withTransactionRetry(() =>
       deps.prisma.$transaction(async (tx) => {
-        for (const threadId of [run.threadId, targetThreadId].sort()) {
+        for (const threadId of lockedThreads) {
           await tx.$queryRaw`SELECT id FROM threads WHERE id = ${threadId} FOR UPDATE`;
         }
         // Claim the delivery key inside the transaction so a concurrent retry
@@ -175,6 +183,19 @@ export async function messageBot(
             select: { id: true },
           });
           if (already) return { ok: true as const, replayed: true as const };
+        }
+        if (options?.automaticOutcome) {
+          const current = await botRequestBoundaries(tx, run, run.id);
+          if (
+            !returnsToSender ||
+            !boundaries ||
+            !current ||
+            current[0]?.threadId !== targetThreadId ||
+            current.some((item) => !lockedThreads.includes(item.threadId)) ||
+            (await crossesExplicitStop(tx, current))
+          ) {
+            return { ok: true as const, replayed: true as const, suppressed: true };
+          }
         }
 
         const senderStillRunning = await tx.run.findFirst({
@@ -299,7 +320,10 @@ export async function messageBot(
     }
     throw error;
   }
-  if ("replayed" in committed) return replayed();
+  if ("replayed" in committed) {
+    if (committed.suppressed) return { ok: true as const, suppressed: true as const };
+    return replayed();
+  }
   if (!committed.ok) return committed;
 
   await deps.events.notify(targetThreadId, committed.targetEventSeq).catch((error) => {
@@ -379,6 +403,7 @@ export async function returnBotMessageOutcome(
     },
     {
       allowTerminalSource: true,
+      automaticOutcome: true,
       forceUnread: options?.forceUnread,
     },
   );

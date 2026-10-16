@@ -39,7 +39,15 @@ export async function loadAgentMemoryContext(
   const sections: string[] = [];
   let remainingBytes = maxBytes - fixedBytes;
   for (const document of documents) {
-    const heading = `${sections.length === 0 ? "" : "\n\n"}## ${document.scope}: ${document.path} (revision ${document.revision})\n`;
+    const metadata = [
+      `document id ${document.id}`,
+      document.updatedAt ? `updated ${document.updatedAt}` : "date unknown",
+      document.sourceRunId ? `source run ${document.sourceRunId}` : undefined,
+      document.sourceThreadId ? `source thread ${document.sourceThreadId}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("; ");
+    const heading = `${sections.length === 0 ? "" : "\n\n"}## ${document.scope}: ${document.path} (revision ${document.revision})\n${metadata}\n`;
     const headingBytes = byteLength(heading);
     if (headingBytes > remainingBytes) break;
     sections.push(heading);
@@ -60,6 +68,7 @@ function byteLength(value: string): number {
 
 function truncateUtf8(value: string, maxBytes: number): string {
   if (maxBytes <= 0) return "";
+  if (value.length <= maxBytes && byteLength(value) <= maxBytes) return value;
   const characters: string[] = [];
   let bytes = 0;
   for (const character of value) {

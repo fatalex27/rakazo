@@ -3077,6 +3077,89 @@ describe("sendThreadMessage", () => {
 });
 
 describe("stopThreadRuns", () => {
+  it("atomically stops linked private descendants and notifies their own threads", async () => {
+    const locks: string[] = [];
+    const graph = [
+      { id: "parent", threadId: "thread-z", depth: 0 },
+      { id: "child", threadId: "thread-a", depth: 1 },
+      { id: "grandchild", threadId: "thread-b", depth: 2 },
+    ];
+    const cancelled = [
+      { id: "child", botId: "bot-a", threadId: "thread-a", taskId: "task-a" },
+      { id: "grandchild", botId: "bot-b", threadId: "thread-b", taskId: "task-b" },
+    ];
+    const tx = {
+      message: { findFirst: vi.fn().mockResolvedValue({ seq: 17 }) },
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi.fn(async (_sql: unknown, id?: string) => {
+        if (id) {
+          locks.push(id);
+          return [];
+        }
+        return graph;
+      }),
+      run: {
+        updateManyAndReturn: vi.fn(async () => cancelled),
+        findUnique: vi.fn(async () => ({ status: "cancelled" })),
+      },
+      task: { updateMany: vi.fn(async () => ({ count: 2 })) },
+      attempt: { updateMany: vi.fn(async () => ({ count: 2 })) },
+      steeringMessage: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+      computerExecutionLease: { findMany: vi.fn(async () => []) },
+      computer: { findMany: vi.fn(async () => []) },
+      thread: { update: vi.fn(async () => ({ nextEventSeq: 2 })) },
+      event: {
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => data),
+        deleteMany: vi.fn(async () => ({ count: 2 })),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (fn: (value: typeof tx) => Promise<unknown>) => fn(tx)),
+      computer: { updateMany: vi.fn(async () => ({ count: 0 })) },
+      computerExecutionLease: { updateMany: vi.fn(async () => ({ count: 0 })) },
+    };
+    const notify = vi.fn(async () => {});
+    await stopThreadRuns(
+      { prisma: prisma as never, sandbox: {} as never, events: { notify } as never },
+      { spaceId: "workspace-1", userId: "user-1" } as Actor,
+      {
+        kind: "bot",
+        botId: "bot-parent",
+        threadId: "thread-z",
+        bot: { computer: null },
+      } as ThreadTarget,
+    );
+    expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    expect(locks).toEqual(["thread-z", "thread-a", "thread-b", "thread-z"]);
+    expect(tx.run.updateManyAndReturn).toHaveBeenCalledOnce();
+    expect(tx.run.updateManyAndReturn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          spaceId: "workspace-1",
+          userId: "user-1",
+          OR: [{ threadId: "thread-z" }, { id: { in: ["parent", "child", "grandchild"] } }],
+        }),
+      }),
+    );
+    expect(tx.event.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          threadId: "thread-a",
+          runId: "child",
+          type: "run.cancelled",
+        }),
+      }),
+    );
+    expect(notify.mock.calls).toEqual([
+      ["thread-z", 1],
+      ["thread-a", 1],
+      ["thread-b", 1],
+    ]);
+    expect(tx.task.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["task-a", "task-b"] } },
+      data: { status: "cancelled" },
+    });
+  });
   it("snapshots every lease when group members share a team computer", async () => {
     const releaseScreen = vi.fn().mockResolvedValue(undefined);
     const execute = vi.fn(async function* () {
@@ -3084,14 +3167,18 @@ describe("stopThreadRuns", () => {
     });
     let nextEventSeq = 0;
     const transaction = {
-      $queryRaw: vi.fn(),
+      message: { findFirst: vi.fn().mockResolvedValue({ seq: 17 }) },
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      task: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      attempt: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       thread: {
         update: vi.fn(async () => ({ nextEventSeq: ++nextEventSeq })),
       },
       run: {
         updateManyAndReturn: vi.fn().mockResolvedValue([
-          { id: "run-a", botId: "bot-a" },
-          { id: "run-b", botId: "bot-b" },
+          { id: "run-a", botId: "bot-a", threadId: "thread-1", taskId: "task-a" },
+          { id: "run-b", botId: "bot-b", threadId: "thread-1", taskId: "task-b" },
         ]),
         findUnique: vi.fn().mockResolvedValue({ status: "cancelled" }),
       },
@@ -3223,12 +3310,20 @@ describe("stopThreadRuns", () => {
       yield { type: "exit", code: 0 };
     });
     const transaction = {
-      $queryRaw: vi.fn(),
+      message: { findFirst: vi.fn().mockResolvedValue({ seq: 17 }) },
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      task: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      attempt: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       thread: {
         update: vi.fn().mockResolvedValue({ nextEventSeq: 5 }),
       },
       run: {
-        updateManyAndReturn: vi.fn().mockResolvedValue([{ id: "run-a", botId: "bot-a" }]),
+        updateManyAndReturn: vi
+          .fn()
+          .mockResolvedValue([
+            { id: "run-a", botId: "bot-a", threadId: "thread-1", taskId: "task-a" },
+          ]),
         findUnique: vi.fn().mockResolvedValue({ status: "cancelled" }),
       },
       steeringMessage: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
@@ -3330,14 +3425,18 @@ describe("stopThreadRuns", () => {
     const writes: string[] = [];
     const created: Array<Record<string, unknown>> = [];
     const transaction = {
-      $queryRaw: vi.fn(),
+      message: { findFirst: vi.fn().mockResolvedValue({ seq: 17 }) },
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      task: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      attempt: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       thread: {
         update: vi.fn(async () => ({ nextEventSeq: ++nextEventSeq })),
       },
       run: {
         updateManyAndReturn: vi.fn().mockResolvedValue([
-          { id: "run-a", botId: "bot-a" },
-          { id: "run-b", botId: "bot-b" },
+          { id: "run-a", botId: "bot-a", threadId: "thread-1", taskId: "task-a" },
+          { id: "run-b", botId: "bot-b", threadId: "thread-1", taskId: "task-b" },
         ]),
         // appendEventInTransaction re-reads the run after the flip.
         findUnique: vi.fn().mockResolvedValue({ status: "cancelled" }),
@@ -3391,13 +3490,18 @@ describe("stopThreadRuns", () => {
 
     expect(created).toEqual([
       expect.objectContaining({
+        type: "thread.meta",
+        seq: 2,
+        payload: { notice: "explicit-stop", stopThroughMessageSeq: 17 },
+      }),
+      expect.objectContaining({
         spaceId: "workspace-1",
         threadId: "thread-1",
         botId: "bot-a",
         type: "run.cancelled",
         runId: "run-a",
         payload: {},
-        seq: 2,
+        seq: 3,
       }),
       expect.objectContaining({
         spaceId: "workspace-1",
@@ -3406,7 +3510,7 @@ describe("stopThreadRuns", () => {
         type: "run.cancelled",
         runId: "run-b",
         payload: {},
-        seq: 3,
+        seq: 4,
       }),
     ]);
     // The terminal seqs sit above every deleted progress seq, so max(seq) never
@@ -3416,13 +3520,52 @@ describe("stopThreadRuns", () => {
     expect(transaction.event.deleteMany).toHaveBeenCalledWith({
       where: { type: "thread.progress", runId: { in: ["run-a", "run-b"] } },
     });
-    expect(notify).toHaveBeenCalledWith("thread-1", 3);
+    expect(notify).toHaveBeenCalledWith("thread-1", 4);
   });
 
-  it("emits no event and skips the wake when nothing was running", async () => {
-    const transaction = {
-      $queryRaw: vi.fn(),
+  it("keeps Stop on an empty group without work a benign no-op", async () => {
+    const tx = {
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      run: { updateManyAndReturn: vi.fn().mockResolvedValue([]) },
+      message: { findFirst: vi.fn().mockResolvedValue(null) },
+      steeringMessage: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      event: { create: vi.fn(), deleteMany: vi.fn() },
       thread: { update: vi.fn() },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (operation: (value: typeof tx) => unknown) => operation(tx)),
+      computer: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      computerExecutionLease: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    };
+    const notify = vi.fn();
+    await expect(
+      stopThreadRuns(
+        { prisma: prisma as never, sandbox: {} as never, events: { notify } as never },
+        { spaceId: "workspace-1", userId: "user-1" } as Actor,
+        {
+          kind: "group",
+          groupId: "empty",
+          groupName: "Empty",
+          threadId: "thread-empty",
+          members: [],
+          memberBotIds: [],
+        },
+      ),
+    ).resolves.toBeUndefined();
+    expect(tx.event.create).not.toHaveBeenCalled();
+    expect(tx.thread.update).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("persists a stop boundary even when nothing was running", async () => {
+    const transaction = {
+      message: { findFirst: vi.fn().mockResolvedValue({ seq: 17 }) },
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      task: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      attempt: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 1 }) },
       run: {
         updateManyAndReturn: vi.fn().mockResolvedValue([]),
         findUnique: vi.fn(),
@@ -3430,7 +3573,7 @@ describe("stopThreadRuns", () => {
       steeringMessage: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
       computer: { findMany: vi.fn() },
       computerExecutionLease: { findMany: vi.fn() },
-      event: { create: vi.fn(), deleteMany: vi.fn() },
+      event: { create: vi.fn(async ({ data }: { data: unknown }) => data), deleteMany: vi.fn() },
     };
     const prisma = {
       $transaction: vi.fn(async (callback: (client: typeof transaction) => unknown) =>
@@ -3461,9 +3604,16 @@ describe("stopThreadRuns", () => {
       target,
     );
 
-    expect(transaction.event.create).not.toHaveBeenCalled();
+    expect(transaction.event.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          type: "thread.meta",
+          payload: { notice: "explicit-stop", stopThroughMessageSeq: 17 },
+        }),
+      }),
+    );
     expect(transaction.event.deleteMany).not.toHaveBeenCalled();
-    expect(transaction.thread.update).not.toHaveBeenCalled();
-    expect(notify).not.toHaveBeenCalled();
+    expect(transaction.thread.update).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledWith("thread-1", 0);
   });
 });

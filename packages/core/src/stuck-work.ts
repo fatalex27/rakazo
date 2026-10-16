@@ -3,7 +3,8 @@
  *  that a forgotten takeover is not silent until the next day. */
 export const STUCK_WORK_NOTIFY_AFTER_MS = 4 * 60 * 60 * 1000;
 
-/** Cancel once that same work has been sitting this long.
+/** Cancel queued work and takeovers once they have been sitting this long.
+ * Human input waits have no automatic expiry.
  *  Matches how long a takeover holds the screen, and leaves the hours after
  *  the reminder for someone to answer before the thread is freed. */
 export const STUCK_WORK_EXPIRE_AFTER_MS = 24 * 60 * 60 * 1000;
@@ -28,10 +29,12 @@ export function stuckWorkAgeMs(updatedAt: Date | string, now: Date): number {
 
 /** `alreadyNotified` is for this episode (the run's current updatedAt), not an older one. */
 export function stuckWorkAction(input: {
+  status: StuckWorkStatus;
   ageMs: number;
   alreadyNotified: boolean;
 }): StuckWorkAction {
-  if (input.ageMs >= STUCK_WORK_EXPIRE_AFTER_MS) return "expire";
+  if (input.status !== "waiting_input" && input.ageMs >= STUCK_WORK_EXPIRE_AFTER_MS)
+    return "expire";
   if (input.ageMs >= STUCK_WORK_NOTIFY_AFTER_MS && !input.alreadyNotified) return "notify";
   return "none";
 }

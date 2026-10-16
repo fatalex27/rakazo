@@ -15,12 +15,22 @@ import {
 } from "./action-approval.js";
 
 describe("toolRequiresApproval", () => {
+  it("allows read-only skill history on unattended webhook runs", () => {
+    expect(unattendedTriggerToolRequiresApproval("webhook", "skill_history", false)).toBe(false);
+  });
   it("requires approval for consequential builtins and destination writes", () => {
     expect(toolRequiresApproval("destination.write", false)).toBe(true);
     expect(toolRequiresApproval("destination.write", true)).toBe(true);
     expect(toolRequiresApproval("secret_request", false)).toBe(true);
     expect(toolRequiresApproval("forget_secret", false)).toBe(true);
     expect(toolRequiresApproval("forget_memory", false)).toBe(true);
+    expect(toolRequiresApproval("forget_memory_document", false, true)).toBe(true);
+    expect(unattendedTriggerToolRequiresApproval("webhook", "forget_memory_document", false)).toBe(
+      true,
+    );
+    expect(unattendedTriggerToolRequiresApproval("webhook", "read_memory_document", false)).toBe(
+      false,
+    );
     expect(toolRequiresApproval("list_secrets", false)).toBe(false);
     expect(toolRequiresApproval("delete_bot", false)).toBe(true);
     expect(toolRequiresApproval("archive_bot", false)).toBe(true);

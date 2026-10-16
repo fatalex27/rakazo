@@ -197,7 +197,7 @@ describePostgres("steering after a run ends without completing (PostgreSQL)", ()
     expect(await prisma.steeringMessage.findUnique({ where: { id: steering.id } })).not.toBeNull();
   });
 
-  it("does not answer a message again after an expired wait that already replied to it", async () => {
+  it("keeps human input waiting even when its previous steering was answered", async () => {
     const fixture = await runSteeredByMessage("waiting_input");
     await botReplies(fixture.run.id);
     const { updatedAt } = await prisma.run.findUniqueOrThrow({ where: { id: fixture.run.id } });
@@ -212,6 +212,6 @@ describePostgres("steering after a run ends without completing (PostgreSQL)", ()
       }),
     );
 
-    expect(expired).toMatchObject({ continuationRunId: null });
+    expect(expired).toBeNull();
   });
 });

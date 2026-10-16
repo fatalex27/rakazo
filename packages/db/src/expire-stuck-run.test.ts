@@ -85,6 +85,20 @@ function tx(options?: {
 }
 
 describe("expireStuckRun", () => {
+  it("refuses to automatically cancel a human input wait even from a stale caller", async () => {
+    const client = tx({ status: "waiting_input" });
+    expect(
+      await expireStuckRun(client as unknown as Prisma.TransactionClient, {
+        runId: "run-1",
+        threadId: "thread-1",
+        status: "waiting_input",
+        updatedAt,
+        now,
+      }),
+    ).toBeNull();
+    expect(client.run.updateMany).not.toHaveBeenCalled();
+    expect(client.message.create).not.toHaveBeenCalled();
+  });
   it("cancels the wait, leaves the status line, and continues pending steering", async () => {
     const client = tx({ steering: true });
     const result = await expireStuckRun(client as unknown as Prisma.TransactionClient, {
@@ -160,18 +174,18 @@ describe("expireStuckRun", () => {
   });
 
   it("leaves the task running when a sibling attempt is still active", async () => {
-    const client = tx({ sibling: true, status: "waiting_input" });
+    const client = tx({ sibling: true, status: "waiting_takeover" });
     await expireStuckRun(client as unknown as Prisma.TransactionClient, {
       runId: "run-1",
       threadId: "thread-1",
-      status: "waiting_input",
+      status: "waiting_takeover",
       updatedAt,
       now,
     });
     expect(client.task.updateMany).not.toHaveBeenCalled();
     expect(client.message.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        blocks: [{ kind: "meta", text: stuckWorkStatusMessage("waiting_input") }],
+        blocks: [{ kind: "meta", text: stuckWorkStatusMessage("waiting_takeover") }],
       }),
     });
   });

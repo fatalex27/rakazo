@@ -533,6 +533,7 @@ export type TeachRecording = z.infer<typeof TeachRecordingSchema>;
 
 export const TaughtSkillSchema = z.object({
   id: Id,
+  revision: z.number().int().positive().optional(),
   botId: Id,
   name: z.string(),
   goal: z.string(),
@@ -552,6 +553,7 @@ export type AgentSkillSource = z.infer<typeof AgentSkillSourceSchema>;
 
 export const AgentSkillSchema = z.object({
   id: Id,
+  revision: z.number().int().positive().optional(),
   name: z.string(),
   description: z.string(),
   content: z.string(),
@@ -561,6 +563,19 @@ export const AgentSkillSchema = z.object({
   updatedAt: z.string(),
 });
 export type AgentSkill = z.infer<typeof AgentSkillSchema>;
+
+export const SkillRevisionSchema = z.object({
+  revision: z.number().int().positive(),
+  snapshot: z.unknown().optional(),
+  source: z.string(),
+  restoredFrom: z.number().int().positive().nullable(),
+  createdAt: z.string(),
+});
+export const RestoreSkillInput = z.object({
+  skillId: Id,
+  targetRevision: z.number().int().positive(),
+  expectedRevision: z.number().int().positive(),
+});
 
 export const AgentSkillCatalogEntrySchema = AgentSkillSchema.pick({
   id: true,
@@ -592,6 +607,7 @@ export const CreateAgentSkillInput = z
 export const UpdateAgentSkillInput = z
   .object({
     skillId: Id,
+    expectedRevision: z.number().int().positive(),
     content: z.string().min(1).max(100_000).optional(),
     name: z.string().min(1).max(80).optional(),
     description: z.string().min(1).max(2000).optional(),
