@@ -2486,6 +2486,7 @@ describeJourneys("required product journeys", () => {
     });
     expect(blocked.status).toBeGreaterThanOrEqual(400);
     const stopped = await rpc<{
+      revision: number;
       status: string;
       playbook: { steps: string[] };
       recording: { events: Array<{ kind: string }>; snapshots: Array<{ summary: string }> };
@@ -2502,16 +2503,25 @@ describeJourneys("required product journeys", () => {
     );
     expect(computerAfterStop.controlHolder).toBe("bot");
     expect(computerAfterStop.controlBotId).toBeNull();
-    await rpc(app, cookie, "skills/updateDraft", {
+    const updated = await rpc<{ revision: number }>(app, cookie, "skills/updateDraft", {
       skillId: skill.id,
+      expectedRevision: stopped.revision,
       name: "Export weekly CRM list",
       playbook: stopped.playbook,
     });
-    const saved = await rpc<{ status: string; name: string }>(app, cookie, "skills/save", {
-      skillId: skill.id,
-      name: "Export weekly CRM list",
-    });
+    const saved = await rpc<{ status: string; name: string; revision: number }>(
+      app,
+      cookie,
+      "skills/save",
+      {
+        skillId: skill.id,
+        expectedRevision: updated.revision,
+        name: "Export weekly CRM list",
+      },
+    );
     expect(saved.status).toBe("saved");
+    expect(updated.revision).toBeGreaterThan(stopped.revision);
+    expect(saved.revision).toBeGreaterThan(updated.revision);
     const listed = await rpc<Array<{ id: string; name: string }>>(app, cookie, "skills/list", {
       botId: bot.id,
     });
