@@ -1362,6 +1362,10 @@ msgstr ""
 msgid "Could not create your bot"
 msgstr "Botun oluşturulamadı"
 
+#: src/pages/KnowledgeSection.tsx
+msgid "Could not delete"
+msgstr ""
+
 #: src/pages/shell/dialogs.tsx
 msgid "Could not delete bot"
 msgstr "Bot silinemedi"
@@ -1944,6 +1948,10 @@ msgstr ""
 
 #: src/components/DesktopUpdates.tsx
 msgid "Desktop update"
+msgstr ""
+
+#: src/components/call/VoiceControls.tsx
+msgid "Dictate"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -3562,6 +3570,10 @@ msgstr "Kontrolü bırak"
 msgid "Release interrupted computer?"
 msgstr ""
 
+#: src/components/teach/SkillDraftCard.tsx
+msgid "Reload"
+msgstr ""
+
 #: src/components/ApprovalRulesSettings.tsx
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/PluginsOverlay.tsx
@@ -4229,6 +4241,10 @@ msgstr "Adımlar"
 msgid "Stop"
 msgstr "Durdur"
 
+#: src/components/call/VoiceControls.tsx
+msgid "Stop dictation"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Stop speaking"
 msgstr "Seslendirmeyi durdur"
@@ -4707,8 +4723,8 @@ msgstr ""
 msgid "View chat"
 msgstr "Sohbeti görüntüle"
 
+#: src/components/call/VoiceControls.tsx
 #: src/pages/SettingsOverlay.tsx
-#: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Voice"

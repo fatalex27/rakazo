@@ -1362,6 +1362,10 @@ msgstr "No se pudo crear el space"
 msgid "Could not create your bot"
 msgstr "No se pudo crear tu bot"
 
+#: src/pages/KnowledgeSection.tsx
+msgid "Could not delete"
+msgstr ""
+
 #: src/pages/shell/dialogs.tsx
 msgid "Could not delete bot"
 msgstr "No se pudo eliminar el bot"
@@ -1944,6 +1948,10 @@ msgstr ""
 
 #: src/components/DesktopUpdates.tsx
 msgid "Desktop update"
+msgstr ""
+
+#: src/components/call/VoiceControls.tsx
+msgid "Dictate"
 msgstr ""
 
 #: src/components/integrations/IntegrationSetup.tsx
@@ -3562,6 +3570,10 @@ msgstr "Ceder el control"
 msgid "Release interrupted computer?"
 msgstr ""
 
+#: src/components/teach/SkillDraftCard.tsx
+msgid "Reload"
+msgstr ""
+
 #: src/components/ApprovalRulesSettings.tsx
 #: src/pages/ModelBackupsSettings.tsx
 #: src/pages/PluginsOverlay.tsx
@@ -4229,6 +4241,10 @@ msgstr "Pasos"
 msgid "Stop"
 msgstr "Detener"
 
+#: src/components/call/VoiceControls.tsx
+msgid "Stop dictation"
+msgstr ""
+
 #: src/pages/Shell.tsx
 msgid "Stop speaking"
 msgstr "Dejar de hablar"
@@ -4707,8 +4723,8 @@ msgstr ""
 msgid "View chat"
 msgstr "Ver chat"
 
+#: src/components/call/VoiceControls.tsx
 #: src/pages/SettingsOverlay.tsx
-#: src/pages/Shell.tsx
 #: src/pages/shell/bot-panel.tsx
 #: src/pages/VoiceSettingsOverlay.tsx
 msgid "Voice"
