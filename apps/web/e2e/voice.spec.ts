@@ -11,6 +11,9 @@ test("voice settings connect a key, speak a reply, and open a call", async ({ pa
   await expect(
     page.getByTestId("composer-bar").getByRole("button", { name: "Voice", exact: true }),
   ).toHaveCount(1);
+  await expect(
+    page.getByTestId("composer-bar").getByRole("button", { name: "Dictate", exact: true }),
+  ).toHaveCount(1);
   await captureScreenshot(page, testInfo, "voice-composer");
   await page
     .getByTestId("composer-bar")
@@ -77,15 +80,23 @@ test("voice settings connect a key, speak a reply, and open a call", async ({ pa
   await expect(page.getByRole("button", { name: "Disconnect", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close voice settings" }).click();
 
+  await composer.fill("Unsent draft survives a call");
   await page
     .getByTestId("composer-bar")
     .getByRole("button", { name: "Voice", exact: true })
     .click();
   await expect(page.getByTestId("call-view")).toBeVisible();
+  await expect(page.getByTestId("call-view")).toHaveAttribute(
+    "data-phase",
+    /listening|thinking|speaking/,
+  );
   await expect(page.getByRole("button", { name: "Hang up" })).toBeVisible();
   await captureScreenshot(page, testInfo, "voice-call");
   await page.getByRole("button", { name: "Hang up" }).click();
   await expect(page.getByTestId("call-view")).toHaveCount(0);
+  await expect(composer).toHaveValue("Unsent draft survives a call");
+  await page.keyboard.press("Control+r");
+  await expect(page.getByPlaceholder(/Message/)).toHaveValue("Unsent draft survives a call");
 
   await openUserSettings(page, "voice");
   const settings = page.getByTestId("voice-settings");

@@ -100,7 +100,6 @@ import {
   LogOut,
   Maximize2,
   Menu,
-  Mic,
   Monitor,
   MoreHorizontal,
   PanelLeftClose,
@@ -147,6 +146,7 @@ import {
 import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
+import { VoiceControls } from "../components/call/VoiceControls";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { lazyOverlay } from "../components/ErrorBoundary";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
@@ -3717,64 +3717,66 @@ export function ShellPage() {
           </div>
         ) : null}
         {active || activeGroup ? (
-          <Composer
-            key={inGroup ? `group:${groupId}` : `bot:${active?.id}`}
-            draftKey={inGroup ? `group:${groupId}` : `bot:${active?.id}`}
-            enterToSend={enterToSend}
-            activeName={inGroup ? (activeGroup?.name ?? activeSnapshot?.groupName) : active?.name}
-            running={composerRunning}
-            disabled={Boolean(recordingSkill)}
-            pendingAttachments={activePendingAttachments}
-            attachmentNotice={attachmentNotice}
-            sendError={sendError}
-            runError={displayedRunError}
-            runErrorId={displayedRunErrorId}
-            onRunErrorPresented={handleRunErrorPresented}
-            onDismissError={dismissComposerError}
-            sending={sending}
-            fileInputRef={fileInputRef}
-            onAttachmentPick={onAttachmentPick}
-            onRemoveAttachment={removeAttachment}
-            onSend={sendMessage}
-            onStop={stopRun}
-            onVoice={
-              !inGroup && active
-                ? () => {
-                    if (!voiceStatus?.ready) {
-                      openSettings("voice");
-                      return;
+          <div className={call ? "invisible" : undefined} aria-hidden={Boolean(call)}>
+            <Composer
+              key={inGroup ? `group:${groupId}` : `bot:${active?.id}`}
+              draftKey={inGroup ? `group:${groupId}` : `bot:${active?.id}`}
+              enterToSend={enterToSend}
+              activeName={inGroup ? (activeGroup?.name ?? activeSnapshot?.groupName) : active?.name}
+              running={composerRunning}
+              disabled={Boolean(recordingSkill)}
+              pendingAttachments={activePendingAttachments}
+              attachmentNotice={attachmentNotice}
+              sendError={sendError}
+              runError={displayedRunError}
+              runErrorId={displayedRunErrorId}
+              onRunErrorPresented={handleRunErrorPresented}
+              onDismissError={dismissComposerError}
+              sending={sending}
+              fileInputRef={fileInputRef}
+              onAttachmentPick={onAttachmentPick}
+              onRemoveAttachment={removeAttachment}
+              onSend={sendMessage}
+              onStop={stopRun}
+              onVoice={
+                !inGroup && active
+                  ? () => {
+                      if (!voiceStatus?.ready) {
+                        openSettings("voice");
+                        return;
+                      }
+                      startCall({
+                        botId: active.id,
+                        botName: active.name,
+                        botColor: active.color,
+                        transcribe: voiceStatus ? Boolean(voiceStatus.transcribe) : undefined,
+                      });
                     }
-                    startCall({
-                      botId: active.id,
-                      botName: active.name,
-                      botColor: active.color,
-                      transcribe: voiceStatus ? Boolean(voiceStatus.transcribe) : undefined,
-                    });
-                  }
-                : undefined
-            }
-            artifactTarget={transcriptArtifactTarget}
-            replyTarget={activeReplyTarget}
-            replyQuote={activeReplyQuote}
-            replyTargetName={replyTargetName}
-            onClearReply={clearReply}
-            mentionTargets={composerMentionTargets}
-            agentSkills={agentSkills}
-            onSlashOpen={refreshAgentSkills}
-            onSlashAction={(action) => {
-              if (action === "chat-settings") {
-                setPanel(inGroup ? "group-settings" : "settings");
-                return;
+                  : undefined
               }
-              if (action === "settings-general") {
-                openSettings("general");
-                return;
-              }
-              if (action === "settings-usage") {
-                openSettings("usage");
-              }
-            }}
-          />
+              artifactTarget={transcriptArtifactTarget}
+              replyTarget={activeReplyTarget}
+              replyQuote={activeReplyQuote}
+              replyTargetName={replyTargetName}
+              onClearReply={clearReply}
+              mentionTargets={composerMentionTargets}
+              agentSkills={agentSkills}
+              onSlashOpen={refreshAgentSkills}
+              onSlashAction={(action) => {
+                if (action === "chat-settings") {
+                  setPanel(inGroup ? "group-settings" : "settings");
+                  return;
+                }
+                if (action === "settings-general") {
+                  openSettings("general");
+                  return;
+                }
+                if (action === "settings-usage") {
+                  openSettings("usage");
+                }
+              }}
+            />
+          </div>
         ) : null}
       </main>
 
@@ -6250,18 +6252,16 @@ export const Composer = memo(function Composer({
             expanded ? "row-start-2" : ""
           }`}
         >
-          {onVoice && draft.trim().length === 0 ? (
-            <Button
-              variant="outline"
-              size="icon"
-              aria-label={t`Voice`}
-              title={t`Voice`}
-              disabled={disabled}
-              onClick={onVoice}
-              className="size-8 shrink-0 rounded-full text-foreground/75"
-            >
-              <Mic size={16} strokeWidth={1.8} />
-            </Button>
+          {onVoice ? (
+            <VoiceControls
+              key={draftKey}
+              disabled={Boolean(disabled)}
+              onVoice={onVoice}
+              onTranscript={(text) => {
+                updateDraft(`${draft}${draft.trim() ? " " : ""}${text}`);
+                textareaRef.current?.focus();
+              }}
+            />
           ) : null}
           {running ? (
             <>
@@ -6285,7 +6285,7 @@ export const Composer = memo(function Composer({
                 <Square size={11} strokeWidth={0} fill="currentColor" />
               </Button>
             </>
-          ) : (
+          ) : canSend || !onVoice ? (
             <Button
               size="icon"
               aria-label={t`Send`}
@@ -6295,7 +6295,7 @@ export const Composer = memo(function Composer({
             >
               <ArrowUp size={16} strokeWidth={2.2} />
             </Button>
-          )}
+          ) : null}
         </div>
       </div>
     </fieldset>

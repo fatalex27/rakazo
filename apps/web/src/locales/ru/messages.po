@@ -4844,3 +4844,9 @@ msgstr "Ваше имя"
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Ваша команда постоянно работающих агентов<0/>, которым вы можете дать настоящую работу."
+
+msgid "Dictate"
+msgstr "Диктовка"
+
+msgid "Stop dictation"
+msgstr "Остановить диктовку"

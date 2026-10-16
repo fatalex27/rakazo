@@ -4844,3 +4844,9 @@ msgstr "Your name"
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Your team of always-on agents<0/>that you can give real work to."
+
+msgid "Dictate"
+msgstr "Dictate"
+
+msgid "Stop dictation"
+msgstr "Stop dictation"
