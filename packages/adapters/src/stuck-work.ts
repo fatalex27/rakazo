@@ -39,7 +39,8 @@ type StuckCandidate = {
 export const STUCK_NOTICE_CLAIM_TTL_MS = 2 * 60 * 1000;
 
 /**
- * Remind, then cancel, queued runs and human waits that have been sitting still.
+ * Remind queued runs and human waits that have been sitting still. Only queued
+ * work and takeovers expire; waiting for an answer has no automatic deadline.
  * Lives on the job reconciler so a second scheduler is not required. The notice
  * stamp is a thread.meta event keyed to this episode's updatedAt, so answering
  * or reclaiming the run (which bumps updatedAt) can remind again later. A pending
