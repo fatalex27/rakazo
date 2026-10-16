@@ -1410,11 +1410,21 @@ describeJourneys("required product journeys", () => {
     );
 
     const [events, messages] = await Promise.all([
-      prisma.event.findMany({ where: { threadId: thread.id }, orderBy: { seq: "asc" } }),
-      prisma.message.findMany({ where: { threadId: thread.id }, orderBy: { seq: "asc" } }),
+      prisma.event.findMany({
+        where: { threadId: thread.id, seq: { gte: thread.nextEventSeq } },
+        orderBy: { seq: "asc" },
+      }),
+      prisma.message.findMany({
+        where: { threadId: thread.id, seq: { gte: thread.nextMessageSeq } },
+        orderBy: { seq: "asc" },
+      }),
     ]);
-    expect(events.map((row) => row.seq)).toEqual(Array.from({ length: 40 }, (_, i) => i));
-    expect(messages.map((row) => row.seq)).toEqual(Array.from({ length: 40 }, (_, i) => i));
+    expect(events.map((row) => row.seq)).toEqual(
+      Array.from({ length: 40 }, (_, i) => thread.nextEventSeq + i),
+    );
+    expect(messages.map((row) => row.seq)).toEqual(
+      Array.from({ length: 40 }, (_, i) => thread.nextMessageSeq + i),
+    );
   });
 
   it("6: fake, managed-sandbox emulator, and desktop executor run the same graphical task", async () => {
