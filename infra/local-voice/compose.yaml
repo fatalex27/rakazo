@@ -1,0 +1,29 @@
+services:
+  voice:
+    build: .
+    image: rakazo-local-voice:local
+    restart: unless-stopped
+    init: true
+    mem_limit: 768m
+    cpus: 0.75
+    pids_limit: 96
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    environment:
+      VOICE_API_TOKEN: ${VOICE_API_TOKEN:?Set a private voice service token}
+    networks:
+      - voice
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+networks:
+  voice:
+    name: rakazo_voice
+    internal: true

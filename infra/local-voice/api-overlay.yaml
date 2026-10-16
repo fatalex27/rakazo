@@ -1,0 +1,15 @@
+# Merge into the existing application's Compose configuration, preserving its other overrides.
+services:
+  api:
+    environment:
+      VOICE_API_URL: http://voice:8000/v1
+    volumes:
+      - ${LOCAL_VOICE_ADAPTER_DIR:?Set the absolute adapter deployment directory}/local-voice.ts:/app/packages/adapters/src/local-voice.ts:ro
+      - ${LOCAL_VOICE_ADAPTER_DIR:?Set the absolute adapter deployment directory}/voice-factory.ts:/app/packages/adapters/src/voice-factory.ts:ro
+    networks:
+      - voice
+
+networks:
+  voice:
+    name: rakazo_voice
+    external: true
